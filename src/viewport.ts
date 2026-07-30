@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import type { HalfEdgeMesh } from './mesh/Halfedgemesh.ts';
 
 export type ViewPreset = 'front' | 'back' | 'right' | 'left' | 'top' | 'bottom';
 
@@ -20,6 +21,12 @@ export class Viewport {
 
   // Track objects for later operations (like selection or clearing)
   private meshes: THREE.Mesh[] = [];
+
+  // Parallel map from a rendered THREE.Mesh to its editable topology.
+  // Only meshes added via addPrimitive() have an entry here — helper
+  // objects (grid, axes) and anything added via the lower-level addMesh()
+  // are display-only and have no editable half-edge structure.
+  private halfEdgeMeshes = new Map<THREE.Mesh, HalfEdgeMesh>();
 
   // Persistent display mode: new meshes pick this up at creation time,
   // not just meshes that existed when the toggle was last clicked.
@@ -220,6 +227,45 @@ export class Viewport {
   }
 
   /**
+   * Adds an editable primitive: renders a THREE.Mesh derived from the given
+   * HalfEdgeMesh's current topology, and keeps the two linked so later
+   * operations (extrude, bevel, loop cut, scale) can mutate the topology
+   * and call refreshPrimitive() to push the change to screen.
+   */
+  addPrimitive(
+      halfEdgeMesh: HalfEdgeMesh,
+      color: number = 0xffffff,
+      position: THREE.Vector3 = new THREE.Vector3(0, 0, 0)
+  ): THREE.Mesh {
+    const geometry = halfEdgeMesh.toBufferGeometry();
+    const mesh = this.addMesh(geometry, color, position);
+    this.halfEdgeMeshes.set(mesh, halfEdgeMesh);
+    return mesh;
+  }
+
+  /** Returns every mesh added via addPrimitive() — i.e. every mesh with editable half-edge topology, for raycasting/selection. */
+  getPrimitiveMeshes(): THREE.Mesh[] {
+    return Array.from(this.halfEdgeMeshes.keys());
+  }
+
+  /** Returns the editable topology behind a mesh added via addPrimitive(), if any. */
+  getHalfEdgeMesh(mesh: THREE.Mesh): HalfEdgeMesh | undefined {
+    return this.halfEdgeMeshes.get(mesh);
+  }
+
+  /**
+   * Rebuilds a mesh's displayed geometry from its current HalfEdgeMesh
+   * topology. Call this after any operation that mutates the topology
+   * (extrude, bevel, loop cut, scale) so the change becomes visible.
+   */
+  refreshPrimitive(mesh: THREE.Mesh): void {
+    const halfEdgeMesh = this.halfEdgeMeshes.get(mesh);
+    if (!halfEdgeMesh) return;
+    mesh.geometry.dispose();
+    mesh.geometry = halfEdgeMesh.toBufferGeometry();
+  }
+
+  /**
    * Remove all meshes from the scene (e.g., "Clear Scene").
    */
   clearMeshes(): void {
@@ -233,6 +279,7 @@ export class Viewport {
       }
     }
     this.meshes = [];
+    this.halfEdgeMeshes.clear();
   }
 
   render(): void {

@@ -3,11 +3,13 @@ import * as THREE from 'three';
 import { Viewport } from '../viewport.ts';
 import type { ViewPreset } from '../viewport.ts';
 import { createPrimitive } from '../mesh/MeshBuilder.ts';
+import { HalfEdgeMesh } from '../mesh/Halfedgemesh.ts';
+import type { SelectionManager } from '../selection/SelectionManager.ts';
 
 const SPAWN_SPACING = 2.5;
 const SPAWN_PER_ROW = 5;
 
-export function setupGUI(viewport: Viewport) {
+export function setupGUI(viewport: Viewport, selectionManager: SelectionManager) {
     const pane = new Pane({ title: 'WebGL Modeler' });
     // Tweakpane's default width (~200px) clips longer button labels and
     // folder titles. Widen it and pin it clear of the viewport edge.
@@ -86,16 +88,75 @@ export function setupGUI(viewport: Viewport) {
     let spawnCount = 0;
     primitivesFolder.addButton({ title: 'Add Primitive' }).on('click', () => {
         const geometry = createPrimitive(primitiveParams.type, primitiveParams.size);
+        const halfEdgeMesh = HalfEdgeMesh.fromBufferGeometry(geometry);
+
+        // Validate on spawn during development — half-edge bugs are silent
+        // otherwise and only show up as visual corruption once an operation
+        // (extrude/bevel/loop cut) runs on a broken mesh.
+        const result = halfEdgeMesh.validate();
+        if (!result.valid) {
+            console.error(`HalfEdgeMesh validation failed for new ${primitiveParams.type}:`, result.errors);
+        }
+
         const col = spawnCount % SPAWN_PER_ROW;
         const row = Math.floor(spawnCount / SPAWN_PER_ROW);
         const position = new THREE.Vector3(col * SPAWN_SPACING, 0, row * SPAWN_SPACING);
-        viewport.addMesh(geometry, 0xffffff, position);
+        viewport.addPrimitive(halfEdgeMesh, 0xffffff, position);
         spawnCount++;
     });
 
     primitivesFolder.addButton({ title: 'Clear Scene' }).on('click', () => {
         viewport.clearMeshes();
         spawnCount = 0;
+        selectionManager.clearSelection();
+    });
+
+    // --- Selection section --------------------------------------------------
+    const selectionFolder = pane.addFolder({ title: 'Selection' });
+
+    const modeState = { mode: selectionManager.mode as 'face' | 'edge' | 'vertex' };
+    const modeMonitor = selectionFolder.addBinding(modeState, 'mode', {
+        label: 'Mode',
+        readonly: true,
+    });
+
+    const modeButtons: { title: string; mode: 'face' | 'edge' | 'vertex' }[] = [
+        { title: 'Face (Key 1)', mode: 'face' },
+        { title: 'Edge (Key 2)', mode: 'edge' },
+        { title: 'Vertex (Key 3)', mode: 'vertex' },
+    ];
+    for (const { title, mode } of modeButtons) {
+        selectionFolder.addButton({ title }).on('click', () => {
+            selectionManager.setMode(mode);
+        });
+    }
+
+    const selectionState = { info: 'None' };
+    const selectionMonitor = selectionFolder.addBinding(selectionState, 'info', {
+        label: 'Selected',
+        readonly: true,
+    });
+
+    selectionFolder.addButton({ title: 'Clear Selection' }).on('click', () => {
+        selectionManager.clearSelection();
+    });
+
+    selectionManager.onChange((selection) => {
+        if (!selection) {
+            selectionState.info = 'None';
+        } else if (selection.mode === 'face') {
+            selectionState.info = `Face #${selection.selectableFace.id} (${selection.selectableFace.triangles.length} tri)`;
+        } else if (selection.mode === 'edge') {
+            selectionState.info = `Edge #${selection.edge.id}`;
+        } else {
+            selectionState.info = `Vertex #${selection.vertex.id}`;
+        }
+        selectionMonitor.refresh();
+    });
+
+    selectionManager.onModeChange((mode) => {
+        modeState.mode = mode;
+        modeMonitor.refresh();
     });
 
     // --- Display section ---------------------------------------------------
