@@ -5,11 +5,12 @@ import type { ViewPreset } from '../viewport.ts';
 import { createPrimitive } from '../mesh/MeshBuilder.ts';
 import { HalfEdgeMesh } from '../mesh/Halfedgemesh.ts';
 import type { SelectionManager } from '../selection/SelectionManager.ts';
+import type { ExtrudeTool } from '../operations/ExtrudeTool.ts';
 
 const SPAWN_SPACING = 2.5;
 const SPAWN_PER_ROW = 5;
 
-export function setupGUI(viewport: Viewport, selectionManager: SelectionManager) {
+export function setupGUI(viewport: Viewport, selectionManager: SelectionManager, extrudeTool: ExtrudeTool) {
     const pane = new Pane({ title: 'WebGL Modeler' });
     // Tweakpane's default width (~200px) clips longer button labels and
     // folder titles. Widen it and pin it clear of the viewport edge.
@@ -157,6 +158,34 @@ export function setupGUI(viewport: Viewport, selectionManager: SelectionManager)
     selectionManager.onModeChange((mode) => {
         modeState.mode = mode;
         modeMonitor.refresh();
+    });
+
+    // --- Operations section --------------------------------------------------
+    // Extrude is mouse-driven (see ExtrudeTool: press E with a face or
+    // vertex selected, move the mouse, click/Enter to confirm, Esc/
+    // right-click to cancel) rather than a button+slider — this panel
+    // shows a hint by default, and surfaces why extrude couldn't start
+    // when it fails, since most people won't have devtools open to see
+    // the console warning.
+    const operationsFolder = pane.addFolder({ title: 'Operations' });
+    const operationsStatus = { text: 'Select a face or vertex, press E to extrude' };
+    const operationsMonitor = operationsFolder.addBinding(operationsStatus, 'text', {
+        label: 'Extrude',
+        readonly: true,
+    });
+
+    const DEFAULT_HINT = 'Select a face or vertex, press E to extrude';
+    let statusClearTimer: ReturnType<typeof setTimeout> | undefined;
+    extrudeTool.onStatus((message) => {
+        operationsStatus.text = message;
+        operationsMonitor.refresh();
+        // Revert to the default hint after a few seconds rather than leaving
+        // a stale failure message showing indefinitely.
+        clearTimeout(statusClearTimer);
+        statusClearTimer = setTimeout(() => {
+            operationsStatus.text = DEFAULT_HINT;
+            operationsMonitor.refresh();
+        }, 4000);
     });
 
     // --- Display section ---------------------------------------------------

@@ -363,6 +363,121 @@ export class HalfEdgeMesh {
     }
 
     /**
+     * Returns the ordered outer boundary loop of a SelectableFace group — the
+     * half-edges whose twin either doesn't exist (mesh boundary) or belongs
+     * to a triangle outside this group (an internal diagonal, like the shared
+     * edge splitting a cube face into 2 triangles, is NOT part of the
+     * boundary since both its sides are inside the group).
+     *
+     * Required for Extrude: a multi-triangle visual face (e.g. a cube face,
+     * 2 triangles) must be extruded as a single quad, not as 2 independent
+     * triangles — extruding per-triangle would incorrectly pull the shared
+     * internal diagonal outward too, splitting the extrusion in half.
+     *
+     * Throws if the group's boundary isn't a single closed loop (e.g. a
+     * malformed or non-manifold group) since extrude has no sane behavior
+     * for that case.
+     */
+    getBoundaryLoop(group: SelectableFace): HalfEdge[] {
+        const groupTriangles = new Set(group.triangles);
+        const boundaryEdges: HalfEdge[] = [];
+
+        for (const face of group.triangles) {
+            for (const edge of face.edges()) {
+                const isInternal = edge.twin !== null && groupTriangles.has(edge.twin.face);
+                if (!isInternal) boundaryEdges.push(edge);
+            }
+        }
+
+        // Order the boundary edges into a continuous loop by chaining
+        // origin->destination. Build a lookup by origin vertex so the next
+        // edge in the loop can be found in O(1) rather than re-scanning.
+        const byOrigin = new Map<HEVertex, HalfEdge>();
+        for (const e of boundaryEdges) {
+            byOrigin.set(e.origin, e);
+        }
+
+        const loop: HalfEdge[] = [];
+        const start = boundaryEdges[0];
+        let current: HalfEdge | undefined = start;
+        const visited = new Set<HalfEdge>();
+
+        while (current && !visited.has(current)) {
+            loop.push(current);
+            visited.add(current);
+            current = byOrigin.get(current.vertex);
+        }
+
+        if (loop.length !== boundaryEdges.length || current !== start) {
+            throw new Error(
+                `getBoundaryLoop: boundary of face group ${group.id} is not a single ` +
+                `closed loop (found ${loop.length} of ${boundaryEdges.length} edges in sequence). ` +
+                `This group may be non-manifold or self-intersecting.`
+            );
+        }
+
+        return loop;
+    }
+
+    /**
+     * Returns every half-edge OUTGOING from `vertex` (i.e. vertex.origin ===
+     * vertex for each), ordered by walking the triangle fan around it via
+     * `current.next.next.twin` — the standard "vertex ring" traversal:
+     * from an outgoing spoke, .next.next reaches the edge terminating back
+     * at `vertex` within the same triangle, and its twin is the next
+     * triangle's outgoing spoke. Verified against a hand-traced 4-triangle
+     * fan before being written.
+     *
+     * Throws if the ring doesn't close (i.e. `vertex` is on a mesh
+     * boundary — some spoke's "edge into vertex" has no twin). Vertex
+     * extrude currently only supports interior vertices; a boundary-vertex
+     * variant would need different wall-stitching and is not implemented.
+     */
+    getVertexRing(vertex: HEVertex): HalfEdge[] {
+        if (!vertex.halfEdge) {
+            throw new Error(`getVertexRing: vertex ${vertex.id} has no half-edge reference (isolated vertex)`);
+        }
+
+        // vertex.halfEdge is documented as "one half-edge that points TO this
+        // vertex" — i.e. an INCOMING edge. Its twin, if present, is the
+        // corresponding OUTGOING spoke to start the walk from.
+        const incoming = vertex.halfEdge;
+        if (!incoming.twin) {
+            throw new Error(
+                `getVertexRing: vertex ${vertex.id} is on a mesh boundary (its reference edge has no twin); ` +
+                `boundary-vertex extrude is not supported.`
+            );
+        }
+        const start = incoming.twin; // outgoing: vertex -> someone
+
+        const ring: HalfEdge[] = [];
+        let current: HalfEdge | undefined = start;
+        const visited = new Set<HalfEdge>();
+
+        while (current && !visited.has(current)) {
+            ring.push(current);
+            visited.add(current);
+            const intoVertex: HalfEdge = current.next.next; // edge terminating back at `vertex` within this triangle
+            if (intoVertex.vertex !== vertex) {
+                throw new Error(
+                    `getVertexRing: internal invariant violated for vertex ${vertex.id} — ` +
+                    `triangle loop does not return to the starting vertex after 3 steps.`
+                );
+            }
+            current = intoVertex.twin ?? undefined;
+        }
+
+        if (current !== start || ring.length === 0) {
+            throw new Error(
+                `getVertexRing: vertex ${vertex.id}'s ring did not close (reached a boundary edge mid-walk); ` +
+                `boundary-vertex extrude is not supported.`
+            );
+        }
+
+        return ring;
+    }
+
+    /**
      * Validates mesh topology integrity. Run this after every
      * topology-changing operation during development — half-edge bugs
      * (wrong twin assignments, broken next/prev loops) are silent otherwise
