@@ -1,30 +1,16 @@
 import * as THREE from 'three';
 
 /**
- * Half-edge mesh data structure.
- *
- * Built over the TRIANGULATED geometry — every Face is a single triangle,
- * not a polygon. Three.js primitives (BoxGeometry, etc.) already come out
- * of the box as triangle soup, so this matches what MeshBuilder produces
- * directly. A visual "cube face" is therefore two adjacent HalfEdgeMesh
- * faces sharing a diagonal edge; grouping coplanar triangles into a single
- * selectable "face" is a selection-layer concern, not something this
- * structure tracks itself. See selection/SelectionManager.ts (Week 5/8)
- * for that grouping logic once it exists.
- *
- * Each half-edge knows:
- *  - the vertex it points TO (`vertex`)
- *  - the face it belongs to (`face`)
- *  - the next half-edge around that face (`next`)
- *  - the previous half-edge around that face (`prev`)
- *  - its twin, the opposite half-edge on the neighboring face (`twin`,
- *    or null if this edge is a boundary edge with no neighbor)
+ * Half-edge mesh over triangulated geometry — every Face is a single
+ * triangle. A "cube face" is therefore two HalfEdgeMesh triangles sharing
+ * a diagonal; grouping coplanar triangles into one selectable face is
+ * SelectionManager's job, not this structure's.
  */
 
 export class HEVertex {
     id: number;
     position: THREE.Vector3;
-    /** One half-edge that points TO this vertex. Enough to walk the full ring. */
+    /** One half-edge that points TO this vertex — enough to walk the full ring. */
     halfEdge: HalfEdge | null = null;
 
     constructor(id: number, position: THREE.Vector3) {
@@ -45,12 +31,10 @@ export class HalfEdge {
         this.id = id;
     }
 
-    /** Origin vertex (where this half-edge starts). */
     get origin(): HEVertex {
         return this.prev.vertex;
     }
 
-    /** Both endpoints of this half-edge, [origin, destination]. */
     endpoints(): [HEVertex, HEVertex] {
         return [this.origin, this.vertex];
     }
@@ -58,22 +42,16 @@ export class HalfEdge {
 
 export class HEFace {
     id: number;
-    /** Any one half-edge on this face's loop. Walk .next three times to get all edges (triangles only). */
+    /** Any one half-edge on this face's loop. */
     halfEdge!: HalfEdge;
 
-    /**
-     * ID of the SelectableFace group this triangle belongs to (see
-     * HalfEdgeMesh.getSelectableFaces()). Undefined until that's been
-     * computed at least once; stale after any topology change until
-     * recomputed.
-     */
+    /** SelectableFace group id — undefined/stale until getSelectableFaces() runs. */
     groupId: number | undefined = undefined;
 
     constructor(id: number) {
         this.id = id;
     }
 
-    /** Returns the 3 half-edges forming this triangular face, in loop order. */
     edges(): [HalfEdge, HalfEdge, HalfEdge] {
         const e0 = this.halfEdge;
         const e1 = e0.next;
@@ -81,13 +59,11 @@ export class HEFace {
         return [e0, e1, e2];
     }
 
-    /** Returns the 3 vertices of this triangular face, in loop order. */
     vertices(): [HEVertex, HEVertex, HEVertex] {
         const [e0, e1, e2] = this.edges();
         return [e0.vertex, e1.vertex, e2.vertex];
     }
 
-    /** Computes this triangle's face normal from its vertex positions. */
     normal(): THREE.Vector3 {
         const [va, vb, vc] = this.vertices();
         const edgeAB = new THREE.Vector3().subVectors(vb.position, va.position);
@@ -96,11 +72,7 @@ export class HEFace {
     }
 }
 
-/**
- * A visually selectable face: one or more coplanar triangles sharing edges,
- * grouped together the way a user expects a single click on a cube face to
- * select the whole face rather than just the triangle under the cursor.
- */
+/** A visually selectable face: one or more coplanar triangles sharing edges. */
 export interface SelectableFace {
     id: number;
     triangles: HEFace[];
@@ -116,24 +88,13 @@ export class HalfEdgeMesh {
     faces: HEFace[] = [];
     halfEdges: HalfEdge[] = [];
 
-    // Cache for getSelectableFaces(); invalidated by invalidateSelectableFaces(),
-    // which any future topology-mutating operation (extrude/bevel/loop cut/
-    // scale) must call once it changes vertex positions or face connectivity.
     private selectableFacesCache: SelectableFace[] | null = null;
 
     /**
-     * Builds a HalfEdgeMesh from a triangulated THREE.BufferGeometry.
-     * Assumes the geometry is indexed (BoxGeometry, PlaneGeometry,
-     * CylinderGeometry, and SphereGeometry all produce indexed geometry by
-     * default) and triangulated (draw mode TRIANGLES, the Three.js default).
-     *
-     * IMPORTANT: Three.js primitive generators duplicate vertices at UV/normal
-     * seams — e.g. BoxGeometry has 24 buffer vertices for 8 physical corners,
-     * one set of 4 per face, so each face can have distinct UVs/normals.
-     * Buffer index is therefore NOT a reliable stand-in for "same physical
-     * point." This method merges buffer vertices that share a position
-     * (within POSITION_EPSILON) into a single HEVertex before building
-     * half-edges, so twin-matching across seams works correctly.
+     * Three.js primitives duplicate vertices at UV/normal seams (e.g.
+     * BoxGeometry: 24 buffer vertices for 8 corners), so buffer index isn't
+     * a reliable stand-in for "same physical point." This merges buffer
+     * vertices sharing a position before building half-edges.
      */
     static fromBufferGeometry(geometry: THREE.BufferGeometry): HalfEdgeMesh {
         const mesh = new HalfEdgeMesh();
@@ -141,23 +102,14 @@ export class HalfEdgeMesh {
         const posAttr = geometry.getAttribute('position');
         const index = geometry.getIndex();
         if (!index) {
-            throw new Error(
-                'HalfEdgeMesh.fromBufferGeometry requires indexed geometry. ' +
-                'Call geometry.toNonIndexed() in reverse (mergeVertices) or ' +
-                'ensure the source primitive is indexed.'
-            );
+            throw new Error('HalfEdgeMesh.fromBufferGeometry requires indexed geometry.');
         }
 
-        // 1. Merge buffer vertices sharing a position into single HEVertex
-        // instances. Quantize position to a grid to build a hash key — exact
-        // float equality is unreliable, and primitives here don't produce
-        // near-miss coordinates that would need a fuzzier tolerance.
         const POSITION_EPSILON = 1e-5;
         const quantize = (n: number) => Math.round(n / POSITION_EPSILON);
         const posKey = (v: THREE.Vector3) => `${quantize(v.x)}_${quantize(v.y)}_${quantize(v.z)}`;
 
         const vertexByPos = new Map<string, HEVertex>();
-        // bufferIndexToVertex[i] = the (possibly shared) HEVertex for buffer index i
         const bufferIndexToVertex: HEVertex[] = new Array(posAttr.count);
 
         for (let i = 0; i < posAttr.count; i++) {
@@ -172,10 +124,8 @@ export class HalfEdgeMesh {
             bufferIndexToVertex[i] = v;
         }
 
-        // 2. Walk triangles, creating 3 half-edges + 1 face per triangle.
-        // Track edges by (fromVertexId, toVertexId) so twins can be resolved
-        // in a second pass without an O(n^2) search. IDs here are the merged
-        // HEVertex ids, not raw buffer indices.
+        // Track edges by (fromId, toId) so twins resolve in a second pass
+        // instead of an O(n^2) search.
         const edgeMap = new Map<string, HalfEdge>();
         const key = (a: number, b: number) => `${a}_${b}`;
 
@@ -209,8 +159,6 @@ export class HalfEdgeMesh {
             heCA.face = face;
             face.halfEdge = heAB;
 
-            // Point each vertex at a half-edge that terminates there, if it
-            // doesn't have one yet (any one is enough to start a traversal).
             if (!vb.halfEdge) vb.halfEdge = heAB;
             if (!vc.halfEdge) vc.halfEdge = heBC;
             if (!va.halfEdge) va.halfEdge = heCA;
@@ -222,9 +170,7 @@ export class HalfEdgeMesh {
             mesh.faces.push(face);
         }
 
-        // 3. Resolve twins: the twin of edge (a->b) is edge (b->a), if it exists.
-        // Edges with no twin are boundary edges (expected for e.g. PlaneGeometry,
-        // or a genuinely open/non-manifold mesh).
+        // twin of (a->b) is (b->a), if it exists; no twin means boundary edge
         for (const [k, he] of edgeMap) {
             const [aStr, bStr] = k.split('_');
             const twinKey = key(Number(bStr), Number(aStr));
@@ -237,30 +183,14 @@ export class HalfEdgeMesh {
         return mesh;
     }
 
-    /**
-     * Maps a rendered triangle index (as reported by THREE.Raycaster's
-     * intersection.faceIndex) back to the HEFace it came from. Populated by
-     * toBufferGeometry() below — the index buffer is built by iterating
-     * `faces` in array order, so triangle N in the rendered geometry is
-     * faces[N]. This map exists so callers rely on an explicit lookup
-     * instead of that ordering as an implicit contract. Rebuilt every time
-     * toBufferGeometry() runs, so it always matches whatever is currently
-     * displayed on screen.
-     */
+    /** Rebuilt by toBufferGeometry(); maps a raycast faceIndex back to its HEFace. */
     private triangleIndexToFace: HEFace[] = [];
 
-    /** Looks up the HEFace for a Three.js raycast intersection.faceIndex. */
     getFaceByTriangleIndex(triangleIndex: number): HEFace | undefined {
         return this.triangleIndexToFace[triangleIndex];
     }
 
-    /**
-     * Returns one HalfEdge per physical edge (skips the twin of any edge
-     * already returned), for edge-selection hit-testing where testing both
-     * half-edges of the same physical edge would be redundant and would
-     * make it ambiguous which twin "owns" the edge for highlighting.
-     * Boundary half-edges (twin === null) are naturally included once.
-     */
+    /** One HalfEdge per physical edge (skips the twin of any edge already returned). */
     getUniqueEdges(): HalfEdge[] {
         const seen = new Set<HalfEdge>();
         const result: HalfEdge[] = [];
@@ -273,12 +203,6 @@ export class HalfEdgeMesh {
         return result;
     }
 
-    /**
-     * Converts this HalfEdgeMesh back into a THREE.BufferGeometry, rebuilding
-     * position/index buffers and recomputing normals. Called after any
-     * topology-changing operation (extrude, bevel, loop cut, scale) to
-     * refresh what's shown on screen.
-     */
     toBufferGeometry(): THREE.BufferGeometry {
         const geometry = new THREE.BufferGeometry();
 
@@ -305,18 +229,13 @@ export class HalfEdgeMesh {
 
     /**
      * Groups triangles into visually selectable faces: flood-fills across
-     * shared (twin) edges to neighboring triangles whose normal matches
-     * within NORMAL_EPSILON, so e.g. a cube face's 2 triangles report as one
-     * SelectableFace and clicking either one selects both.
-     *
-     * Result is cached; call invalidateSelectableFaces() after any topology
-     * or vertex-position change before relying on this again (grouping can
-     * change — e.g. a bevel introduces a new non-coplanar triangle pair).
+     * shared edges to neighbors with a matching normal. Cached — call
+     * invalidateSelectableFaces() after any topology/position change.
      */
     getSelectableFaces(): SelectableFace[] {
         if (this.selectableFacesCache) return this.selectableFacesCache;
 
-        const NORMAL_EPSILON = 1e-4; // dot-product closeness, not angle in degrees
+        const NORMAL_EPSILON = 1e-4; // dot-product closeness, not degrees
         const visited = new Set<HEFace>();
         const groups: SelectableFace[] = [];
 
@@ -338,8 +257,6 @@ export class HalfEdgeMesh {
                     if (!twin || visited.has(twin.face)) continue;
 
                     const neighborNormal = twin.face.normal();
-                    // 1 - dot() is ~0 for parallel normals; small for near-parallel.
-                    // Using dot directly (not angle) avoids an acos() per edge.
                     if (1 - startNormal.dot(neighborNormal) < NORMAL_EPSILON) {
                         visited.add(twin.face);
                         stack.push(twin.face);
@@ -354,7 +271,6 @@ export class HalfEdgeMesh {
         return groups;
     }
 
-    /** Call after any operation that changes topology or vertex positions. */
     invalidateSelectableFaces(): void {
         this.selectableFacesCache = null;
         for (const face of this.faces) {
@@ -363,20 +279,10 @@ export class HalfEdgeMesh {
     }
 
     /**
-     * Returns the ordered outer boundary loop of a SelectableFace group — the
-     * half-edges whose twin either doesn't exist (mesh boundary) or belongs
-     * to a triangle outside this group (an internal diagonal, like the shared
-     * edge splitting a cube face into 2 triangles, is NOT part of the
-     * boundary since both its sides are inside the group).
-     *
-     * Required for Extrude: a multi-triangle visual face (e.g. a cube face,
-     * 2 triangles) must be extruded as a single quad, not as 2 independent
-     * triangles — extruding per-triangle would incorrectly pull the shared
-     * internal diagonal outward too, splitting the extrusion in half.
-     *
-     * Throws if the group's boundary isn't a single closed loop (e.g. a
-     * malformed or non-manifold group) since extrude has no sane behavior
-     * for that case.
+     * Ordered outer boundary loop of a SelectableFace group — an internal
+     * diagonal (both sides inside the group) is excluded. Needed so a
+     * multi-triangle face (e.g. a cube face) extrudes as one quad rather
+     * than two independent triangles.
      */
     getBoundaryLoop(group: SelectableFace): HalfEdge[] {
         const groupTriangles = new Set(group.triangles);
@@ -389,9 +295,6 @@ export class HalfEdgeMesh {
             }
         }
 
-        // Order the boundary edges into a continuous loop by chaining
-        // origin->destination. Build a lookup by origin vertex so the next
-        // edge in the loop can be found in O(1) rather than re-scanning.
         const byOrigin = new Map<HEVertex, HalfEdge>();
         for (const e of boundaryEdges) {
             byOrigin.set(e.origin, e);
@@ -411,8 +314,7 @@ export class HalfEdgeMesh {
         if (loop.length !== boundaryEdges.length || current !== start) {
             throw new Error(
                 `getBoundaryLoop: boundary of face group ${group.id} is not a single ` +
-                `closed loop (found ${loop.length} of ${boundaryEdges.length} edges in sequence). ` +
-                `This group may be non-manifold or self-intersecting.`
+                `closed loop (found ${loop.length} of ${boundaryEdges.length} edges in sequence).`
             );
         }
 
@@ -420,35 +322,24 @@ export class HalfEdgeMesh {
     }
 
     /**
-     * Returns every half-edge OUTGOING from `vertex` (i.e. vertex.origin ===
-     * vertex for each), ordered by walking the triangle fan around it via
-     * `current.next.next.twin` — the standard "vertex ring" traversal:
-     * from an outgoing spoke, .next.next reaches the edge terminating back
-     * at `vertex` within the same triangle, and its twin is the next
-     * triangle's outgoing spoke. Verified against a hand-traced 4-triangle
-     * fan before being written.
-     *
-     * Throws if the ring doesn't close (i.e. `vertex` is on a mesh
-     * boundary — some spoke's "edge into vertex" has no twin). Vertex
-     * extrude currently only supports interior vertices; a boundary-vertex
-     * variant would need different wall-stitching and is not implemented.
+     * Outgoing half-edges from `vertex`, ordered by walking the triangle
+     * fan via `current.next.next.twin`. Throws if the ring doesn't close
+     * (vertex is on a mesh boundary) — vertex extrude only supports
+     * interior vertices.
      */
     getVertexRing(vertex: HEVertex): HalfEdge[] {
         if (!vertex.halfEdge) {
             throw new Error(`getVertexRing: vertex ${vertex.id} has no half-edge reference (isolated vertex)`);
         }
 
-        // vertex.halfEdge is documented as "one half-edge that points TO this
-        // vertex" — i.e. an INCOMING edge. Its twin, if present, is the
-        // corresponding OUTGOING spoke to start the walk from.
+        // vertex.halfEdge is an INCOMING edge; its twin is the outgoing spoke to start from.
         const incoming = vertex.halfEdge;
         if (!incoming.twin) {
             throw new Error(
-                `getVertexRing: vertex ${vertex.id} is on a mesh boundary (its reference edge has no twin); ` +
-                `boundary-vertex extrude is not supported.`
+                `getVertexRing: vertex ${vertex.id} is on a mesh boundary; boundary-vertex extrude is not supported.`
             );
         }
-        const start = incoming.twin; // outgoing: vertex -> someone
+        const start = incoming.twin;
 
         const ring: HalfEdge[] = [];
         let current: HalfEdge | undefined = start;
@@ -457,7 +348,7 @@ export class HalfEdgeMesh {
         while (current && !visited.has(current)) {
             ring.push(current);
             visited.add(current);
-            const intoVertex: HalfEdge = current.next.next; // edge terminating back at `vertex` within this triangle
+            const intoVertex: HalfEdge = current.next.next;
             if (intoVertex.vertex !== vertex) {
                 throw new Error(
                     `getVertexRing: internal invariant violated for vertex ${vertex.id} — ` +
@@ -469,44 +360,33 @@ export class HalfEdgeMesh {
 
         if (current !== start || ring.length === 0) {
             throw new Error(
-                `getVertexRing: vertex ${vertex.id}'s ring did not close (reached a boundary edge mid-walk); ` +
-                `boundary-vertex extrude is not supported.`
+                `getVertexRing: vertex ${vertex.id}'s ring did not close; boundary-vertex extrude is not supported.`
             );
         }
 
         return ring;
     }
 
-    /**
-     * Validates mesh topology integrity. Run this after every
-     * topology-changing operation during development — half-edge bugs
-     * (wrong twin assignments, broken next/prev loops) are silent otherwise
-     * and only surface as visual corruption much later.
-     */
+    /** Run after any topology-changing operation — half-edge bugs are silent otherwise. */
     validate(): MeshValidationResult {
         const errors: string[] = [];
 
         for (const he of this.halfEdges) {
-            // next/prev must be mutually consistent
             if (he.next.prev !== he) {
                 errors.push(`HalfEdge ${he.id}: next.prev does not point back to self`);
             }
             if (he.prev.next !== he) {
                 errors.push(`HalfEdge ${he.id}: prev.next does not point back to self`);
             }
-            // twin must be mutually consistent (if present)
             if (he.twin && he.twin.twin !== he) {
                 errors.push(`HalfEdge ${he.id}: twin.twin does not point back to self`);
             }
-            // a half-edge and its twin should point to opposite endpoints
             if (he.twin && he.twin.vertex === he.vertex) {
                 errors.push(`HalfEdge ${he.id}: twin shares the same destination vertex (degenerate edge)`);
             }
-            // face loop must close in exactly 3 steps (triangles only)
             if (he.next.next.next !== he) {
                 errors.push(`HalfEdge ${he.id}: face loop does not close after 3 steps`);
             }
-            // every half-edge in a face's loop must reference that same face
             if (he.face !== he.next.face) {
                 errors.push(`HalfEdge ${he.id}: inconsistent face reference with next edge`);
             }

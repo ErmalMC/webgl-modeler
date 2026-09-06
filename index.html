@@ -17,6 +17,165 @@
     canvas {
       display: block;
     }
+
+    /* Panel theme. --accent (0xff8800) matches SelectionManager's orange
+       highlight so "orange" means the same thing in the viewport and the
+       panel. Tweakpane v4's public --tp-* variable names below. */
+    .tp-rotv {
+      --tp-base-background-color: #202329;
+      --tp-base-border-radius: 3px;
+      --tp-base-font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Roboto Mono", ui-monospace, monospace;
+      --tp-base-shadow-color: rgba(0, 0, 0, 0.45);
+
+      --tp-button-background-color: #282c33;
+      --tp-button-background-color-active: #33383f;
+      --tp-button-background-color-focus: #30353c;
+      --tp-button-background-color-hover: #2c3138;
+      --tp-button-foreground-color: #e4e6ea;
+
+      --tp-container-background-color: transparent;
+      --tp-container-background-color-active: rgba(255, 136, 0, 0.1);
+      --tp-container-background-color-focus: rgba(148, 163, 184, 0.06);
+      --tp-container-background-color-hover: rgba(148, 163, 184, 0.05);
+      --tp-container-foreground-color: #7d8695;
+
+      --tp-input-background-color: #16181b;
+      --tp-input-background-color-active: #1a1d21;
+      --tp-input-background-color-focus: #1a1d21;
+      --tp-input-background-color-hover: #191c20;
+      --tp-input-foreground-color: #e4e6ea;
+
+      --tp-label-foreground-color: #7d8695;
+      --tp-monitor-background-color: #16181b;
+      --tp-monitor-foreground-color: #ff8800;
+      --tp-groove-foreground-color: rgba(148, 163, 184, 0.14);
+
+      font-family: -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+      letter-spacing: 0.01em;
+    }
+
+    /* Folder headers: small-caps label + hairline rule instead of boxed accordion chrome. */
+    .tp-fldv_b {
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 0;
+      padding-left: 2px;
+    }
+    .tp-fldv_t {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #7d8695;
+    }
+    .tp-fldv_m {
+      opacity: 0.6;
+    }
+
+    .tp-rotv_t {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #e4e6ea;
+    }
+    .tp-rotv_t::before {
+      content: "+ ";
+      color: #ff8800;
+      font-weight: 400;
+    }
+    .tp-rotv_b {
+      border-bottom: 1px solid rgba(255, 136, 0, 0.25);
+    }
+
+    /* Readonly monitors (Selected, tool status rows) get a recessed, monospace readout look. */
+    .tp-sglv_i {
+      font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Roboto Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.01em;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+
+    /* Opt-in grid layout for specific buttons (camera view presets) via .grid-btn. */
+    .grid-btn {
+      display: inline-flex !important;
+      width: calc(33.333% - 3px);
+      vertical-align: top;
+    }
+    .grid-btn .tp-lblv_l {
+      display: none;
+    }
+    .grid-btn .tp-lblv_v {
+      width: 100%;
+    }
+    .grid-btn + .grid-btn {
+      margin-left: 4px;
+    }
+
+    /* Segmented control for Face/Edge/Vertex selection mode. */
+    .segment-btn {
+      display: inline-flex !important;
+      width: calc(33.333% - 3px);
+      vertical-align: top;
+    }
+    .segment-btn .tp-lblv_l {
+      display: none;
+    }
+    .segment-btn .tp-lblv_v {
+      width: 100%;
+    }
+    .segment-btn + .segment-btn {
+      margin-left: 4px;
+    }
+    .segment-active .tp-btnv_b {
+      background-color: rgba(255, 136, 0, 0.16) !important;
+      color: #ff8800 !important;
+      box-shadow: inset 0 0 0 1px rgba(255, 136, 0, 0.4);
+    }
+
+    /* Operations rows: key-glyph badge ahead of the label. */
+    .op-key {
+      display: inline-block;
+      min-width: 22px;
+      padding: 1px 4px;
+      margin-right: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 3px;
+      font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Roboto Mono", ui-monospace, monospace;
+      font-size: 10px;
+      text-align: center;
+      color: #7d8695;
+      background: rgba(148, 163, 184, 0.06);
+    }
+
+    /* Plain help-text row (e.g. the numpad legend) — not styled as a sunken readout. */
+    .hint-row .tp-sglv_i {
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      color: #7d8695;
+      font-family: -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+      font-size: 10px;
+      letter-spacing: 0.01em;
+      line-height: 1.5;
+      padding: 2px 4px 6px;
+      cursor: default;
+    }
+    .hint-row .tp-lblv_v {
+      width: 100%;
+    }
+
+    /* Panel resize handles (see gui.ts's setupResizableSize) — invisible until hovered/dragged. */
+    .tp-rotv > div[title="Drag to resize panel width"],
+    .tp-rotv > div[title="Drag to resize panel height"] {
+      background: transparent;
+      transition: background-color 120ms ease;
+    }
+    .tp-rotv > div[title="Drag to resize panel width"]:hover,
+    .tp-rotv > div[title="Drag to resize panel width"]:active,
+    .tp-rotv > div[title="Drag to resize panel height"]:hover,
+    .tp-rotv > div[title="Drag to resize panel height"]:active {
+      background: rgba(255, 136, 0, 0.35);
+    }
   </style>
 </head>
 <body>

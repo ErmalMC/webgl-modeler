@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Viewport } from '../viewport';
 import type { SelectableFace, HalfEdgeMesh, HEVertex, HalfEdge } from '../mesh/Halfedgemesh.ts';
+import type { InteractionLock } from '../operations/InteractionLock.ts';
 
 export type SelectionMode = 'face' | 'edge' | 'vertex';
 
@@ -33,19 +34,10 @@ const VERTEX_PICK_RADIUS_PX = 10;
 const VERTEX_DOT_SCREEN_SIZE_PX = 8;
 
 /**
- * Click-based selection (F4 face, plus edge/vertex per Week 8). Three modes,
- * switched via SelectionManager.setMode() — wired to both GUI and numpad
- * keys (1/2/3) by the caller (see ui/gui.ts and main.ts).
- *
- * Face selection raycasts against real mesh triangles (has surface area to
- * hit). Edges and vertices don't, so those two modes instead project
- * candidates to screen space and pick whichever is within a pixel-radius
- * threshold of the click, closest one wins — matching the approach flagged
- * in plan.md's "Known Challenges" section.
- *
- * Helper objects (grid, axes) and meshes added via the lower-level
- * Viewport.addMesh() are not selectable, since they have no HalfEdgeMesh
- * behind them.
+ * Click-based selection across face/edge/vertex modes. Face selection
+ * raycasts against real triangles; edges and vertices project candidates
+ * to screen space and pick whichever is within a pixel-radius threshold
+ * of the click.
  */
 export class SelectionManager {
     private viewport: Viewport;
@@ -53,20 +45,22 @@ export class SelectionManager {
     private pointer = new THREE.Vector2();
     private highlightObject: THREE.Object3D | null = null;
 
-    // OrbitControls listens on the same canvas; a click-drag to rotate the
-    // camera fires 'click' on mouseup too. Track pointer-down position and
-    // only treat it as a selection click if the pointer barely moved.
+    // Set post-construction via setInteractionLock() since main.ts builds
+    // SelectionManager before the shared lock exists. When present, it's
+    // consulted before any click-to-select or mode switch: a modal tool
+    // mid-drag holds this lock and keeps its own handle pointing at
+    // whatever's selected, and none of those tools notice selection
+    // changing under them — so selection refuses to change while the lock
+    // is held, rather than silently orphaning an active operation.
+    private interactionLock: InteractionLock | null = null;
+
     private pointerDownPos = { x: 0, y: 0 };
     private static readonly CLICK_DRAG_THRESHOLD_PX = 4;
 
     mode: SelectionMode = 'face';
     current: Selection | null = null;
 
-    // Fired whenever selection changes (selected or cleared), so callers
-    // like the GUI can react without polling. Kept as a simple array rather
-    // than a full event-emitter dependency for something this small.
     private changeListeners: Array<(selection: Selection | null) => void> = [];
-    // Fired whenever the mode changes, independent of selection.
     private modeChangeListeners: Array<(mode: SelectionMode) => void> = [];
 
     onChange(listener: (selection: Selection | null) => void): void {
@@ -75,6 +69,10 @@ export class SelectionManager {
 
     onModeChange(listener: (mode: SelectionMode) => void): void {
         this.modeChangeListeners.push(listener);
+    }
+
+    setInteractionLock(lock: InteractionLock): void {
+        this.interactionLock = lock;
     }
 
     private notifyChange(): void {
@@ -98,9 +96,7 @@ export class SelectionManager {
             this.handleClick(e);
         });
 
-        // Top-row 1/2/3 for selection mode — matches Blender's actual
-        // convention. Numpad 1/2/3 are reserved for camera views (see
-        // Viewport.handleKeydown) so these must not collide with those.
+        // Top-row 1/2/3 (numpad 1/2/3 are reserved for camera views).
         window.addEventListener('keydown', (e) => {
             if (e.code === 'Digit1') this.setMode('face');
             else if (e.code === 'Digit2') this.setMode('edge');
@@ -108,20 +104,19 @@ export class SelectionManager {
         });
     }
 
-    /**
-     * Switches selection mode. Following Blender's convention, this clears
-     * the current selection rather than trying to convert it (e.g. a
-     * selected face doesn't become "its 4 vertices" automatically) — keeps
-     * behavior predictable and avoids ambiguous multi-target conversions.
-     */
+    /** Clears the current selection rather than converting it, matching Blender's convention. */
     setMode(mode: SelectionMode): void {
         if (this.mode === mode) return;
+        // Ignoring a mode switch mid-drag is a smaller behavior change than
+        // orphaning the active tool's handle — see the lock field's comment above.
+        if (this.interactionLock?.isLocked()) return;
         this.mode = mode;
         this.clearSelection();
         this.notifyModeChange();
     }
 
     private handleClick(event: MouseEvent): void {
+        if (this.interactionLock?.isLocked()) return;
         const rect = this.viewport.renderer.domElement.getBoundingClientRect();
         const clickX = event.clientX - rect.left;
         const clickY = event.clientY - rect.top;
@@ -156,9 +151,6 @@ export class SelectionManager {
     }
 
     private handleFaceClick(mesh: THREE.Mesh, halfEdgeMesh: HalfEdgeMesh, hit: THREE.Intersection): void {
-        // hit.faceIndex is null for non-indexed/point/line objects; our
-        // primitives are always indexed triangle meshes, but guard anyway
-        // rather than assume.
         if (hit.faceIndex === null || hit.faceIndex === undefined) {
             this.clearSelection();
             return;
@@ -166,9 +158,6 @@ export class SelectionManager {
 
         const triangleFace = halfEdgeMesh.getFaceByTriangleIndex(hit.faceIndex);
         if (!triangleFace || triangleFace.groupId === undefined) {
-            // groupId is undefined if getSelectableFaces() hasn't been called
-            // yet for this mesh (e.g. right after an operation that invalidated
-            // the cache) — compute it now rather than silently failing to select.
             halfEdgeMesh.getSelectableFaces();
         }
         const refreshedFace = halfEdgeMesh.getFaceByTriangleIndex(hit.faceIndex)!;
@@ -177,12 +166,7 @@ export class SelectionManager {
         this.select({ mode: 'face', mesh, halfEdgeMesh, selectableFace: group });
     }
 
-    /**
-     * Projects every vertex of the mesh to screen space and picks the
-     * closest one within VERTEX_PICK_RADIUS_PX of the click. O(vertexCount)
-     * per click — fine at this project's scale (a UV sphere is under 1000
-     * vertices); would need a spatial index if meshes grew much larger.
-     */
+    /** O(vertexCount) per click — fine at this project's scale. */
     private handleVertexClick(
         mesh: THREE.Mesh,
         halfEdgeMesh: HalfEdgeMesh,
@@ -197,7 +181,7 @@ export class SelectionManager {
         for (const v of halfEdgeMesh.vertices) {
             worldPos.copy(v.position).applyMatrix4(mesh.matrixWorld);
             const screen = this.worldToScreen(worldPos, rect);
-            if (!screen) continue; // behind the camera
+            if (!screen) continue;
 
             const dist = Math.hypot(screen.x - clickX, screen.y - clickY);
             if (dist < closestDist) {
@@ -213,12 +197,7 @@ export class SelectionManager {
         }
     }
 
-    /**
-     * Projects every unique edge's two endpoints to screen space and picks
-     * the closest one (by point-to-segment distance) within
-     * EDGE_PICK_RADIUS_PX of the click. Uses getUniqueEdges() so each
-     * physical edge is only tested once, not once per triangle side.
-     */
+    /** Uses getUniqueEdges() so each physical edge is tested once, not once per triangle side. */
     private handleEdgeClick(
         mesh: THREE.Mesh,
         halfEdgeMesh: HalfEdgeMesh,
@@ -253,10 +232,9 @@ export class SelectionManager {
         }
     }
 
-    /** Projects a world-space point to canvas pixel coordinates. Returns null if behind the camera. */
     private worldToScreen(worldPos: THREE.Vector3, rect: DOMRect): { x: number; y: number } | null {
         const projected = worldPos.clone().project(this.viewport.camera);
-        if (projected.z > 1) return null; // behind the camera / clipped
+        if (projected.z > 1) return null;
         return {
             x: ((projected.x + 1) / 2) * rect.width,
             y: ((1 - projected.y) / 2) * rect.height,
@@ -270,7 +248,10 @@ export class SelectionManager {
     }
 
     clearSelection(): void {
-        if (this.current === null) return; // avoid firing spurious no-op change events
+        if (this.current === null) return;
+        // Same reasoning as setMode()/handleClick() — refuse rather than
+        // orphan a modal tool's in-progress handle.
+        if (this.interactionLock?.isLocked()) return;
         this.current = null;
         this.removeHighlight();
         this.notifyChange();
@@ -293,11 +274,8 @@ export class SelectionManager {
             this.highlightObject = this.buildVertexHighlight(this.current);
         }
 
-        // Parent under the selected mesh rather than manually copying its
-        // transform: highlight geometry/points are already expressed in the
-        // mesh's local space (straight from HEVertex.position), so parenting
-        // lets Three.js's scene graph keep the highlight correctly positioned
-        // if the mesh is ever moved, rotated, or scaled — no manual sync needed.
+        // Parent under the mesh rather than copying its transform — highlight
+        // geometry is already in the mesh's local space.
         this.current.mesh.add(this.highlightObject);
     }
 
@@ -317,9 +295,6 @@ export class SelectionManager {
 
         const material = new THREE.MeshBasicMaterial({
             color: HIGHLIGHT_COLOR,
-            // Slightly offset via polygon offset rather than scaling the overlay,
-            // so highlight geometry doesn't visually separate from the base mesh
-            // at grazing camera angles.
             polygonOffset: true,
             polygonOffsetFactor: -1,
             polygonOffsetUnits: -1,
@@ -335,24 +310,16 @@ export class SelectionManager {
         const geometry = new THREE.BufferGeometry().setFromPoints([a.position, b.position]);
         const material = new THREE.LineBasicMaterial({
             color: HIGHLIGHT_COLOR,
-            linewidth: 3, // note: WebGL ignores linewidth on most platforms; kept for the few that honor it
+            linewidth: 3, // WebGL ignores this on most platforms; kept for the few that honor it
         });
         return new THREE.Line(geometry, material);
     }
 
     private buildVertexHighlight(selection: VertexSelection): THREE.Sprite {
-        // A camera-facing sprite renders as a consistent on-screen dot size
-        // regardless of distance, which reads more clearly as "a point" than
-        // a 3D sphere would at oblique angles or far zoom. sizeAttenuation:false
-        // keeps it a fixed pixel size; scale is set in normalized device units,
-        // recalculated on resize would be needed for perfect precision but a
-        // fixed value is a reasonable approximation at typical window sizes.
         const material = new THREE.SpriteMaterial({ color: HIGHLIGHT_COLOR, sizeAttenuation: false });
         const sprite = new THREE.Sprite(material);
         const scale = (VERTEX_DOT_SCREEN_SIZE_PX / window.innerHeight) * 2;
         sprite.scale.set(scale, scale, 1);
-        // Local-space position — correct once parented under the mesh in
-        // rebuildHighlight(), since HEVertex.position is already mesh-local.
         sprite.position.copy(selection.vertex.position);
         return sprite;
     }
@@ -372,12 +339,12 @@ export class SelectionManager {
     }
 }
 
-/** Shortest distance from point (px,py) to line segment (ax,ay)-(bx,by), all in the same 2D space. */
+/** Shortest distance from point (px,py) to line segment (ax,ay)-(bx,by). */
 function pointToSegmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
     const dx = bx - ax;
     const dy = by - ay;
     const lengthSq = dx * dx + dy * dy;
-    if (lengthSq === 0) return Math.hypot(px - ax, py - ay); // degenerate segment (a === b)
+    if (lengthSq === 0) return Math.hypot(px - ax, py - ay);
 
     let t = ((px - ax) * dx + (py - ay) * dy) / lengthSq;
     t = Math.max(0, Math.min(1, t));

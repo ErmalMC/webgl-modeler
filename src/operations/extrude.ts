@@ -3,57 +3,31 @@ import { HalfEdgeMesh, HEVertex, HEFace, HalfEdge } from '../mesh/Halfedgemesh.t
 import type { SelectableFace } from '../mesh/Halfedgemesh.ts';
 
 /**
- * A handle to an in-progress extrude (face or vertex), returned by
- * beginFaceExtrude() / beginVertexExtrude(). Pass it to
- * updateExtrudeDistance() on every mouse-move while dragging, and to
- * either commitExtrude() or cancelExtrude() when the user finishes.
- *
- * Modeled after Blender's modal operator pattern: pressing E performs the
- * topology change immediately (at distance 0, so nothing looks different
- * yet), then mouse movement only repositions already-created vertices —
- * it never re-runs topology construction. Live dragging is just "move
- * some vertices," not "rebuild the mesh every frame."
+ * Handle to an in-progress extrude (face or vertex). Pass to
+ * updateExtrudeDistance()/updateExtrudeOffset() on every move, then
+ * commitExtrude() or cancelExtrude() when done. The topology change
+ * happens immediately at distance 0; dragging only repositions vertices.
  */
 export interface ExtrudeHandle {
     mesh: HalfEdgeMesh;
     normal: THREE.Vector3;
     newVertices: HEVertex[];
-    /** Base (distance-0) position for each new vertex — update() offsets from here, not the vertex's current position, so repeated drags don't accumulate error. */
+    /** Distance-0 base position per new vertex — updates offset from here, not the current position. */
     basePositions: Map<HEVertex, THREE.Vector3>;
     newFaces: HEFace[];
-    /** Exact (edge -> original vertex) pairs recorded before mutation, so cancel can restore them exactly rather than infer them. */
+    /** (edge -> original vertex) pairs recorded before mutation, for exact cancel. */
     originalAssignment: Map<HalfEdge, HEVertex>;
-    /**
-     * For face extrude: each boundary edge's twin exactly as it was before
-     * beginFaceExtrude() rewired it to point at the new wall, so cancel can
-     * restore the original neighbor link. Empty for vertex/tip extrude,
-     * which never rewires an existing edge's twin (only new edges are
-     * twinned together).
-     */
+    /** Each boundary edge's pre-extrude twin, for face extrude. Empty for vertex/tip extrude. */
     originalBoundaryTwins: Map<HalfEdge, HalfEdge | null>;
-    /**
-     * The subset of `newVertices` that are genuinely new HEVertex objects
-     * (created via `new HEVertex(...)`), as opposed to pre-existing
-     * vertices that are dragged in place — see beginFaceExtrude's
-     * interior-vertex handling. cancelExtrude() removes only these from
-     * the mesh; the rest are original vertices it must leave alone.
-     */
+    /** The subset of newVertices that are genuinely new objects (vs. dragged-in-place originals); only these get removed on cancel. */
     createdVertices: HEVertex[];
 }
 
 /**
- * Begins an extrude on a single selected face, performing the topology
- * mutation immediately at distance 0 (new geometry exists but is
- * coincident with the original face — invisible until moved).
- *
- * Single-face extrude only (per plan.md's Known Challenges — multi-face
- * extrude requires distinguishing outer-selection boundary edges from
- * edges shared between selected faces, which is out of scope here).
- *
- * The input `group` may be several coplanar triangles (e.g. a cube face is
- * 2 triangles sharing a diagonal) — the whole group is extruded as one
- * logical face using its outer boundary loop, not per-triangle, so the
- * internal diagonal is preserved rather than incorrectly pulled outward.
+ * Extrudes a single selected face, mutating topology immediately at
+ * distance 0. A coplanar group (e.g. a cube face's 2 triangles) is
+ * extruded via its outer boundary loop, not per-triangle, so the shared
+ * internal diagonal is preserved.
  */
 export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): ExtrudeHandle {
     const boundary = mesh.getBoundaryLoop(group);
@@ -66,9 +40,6 @@ export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): Ext
     const normal = group.triangles[0].normal();
     const newFaces: HEFace[] = [];
 
-    // Record the group's exact original (edge -> vertex) assignment before
-    // any mutation, so cancelExtrude() can restore it exactly rather than
-    // infer it from the resulting topology.
     const originalAssignment = new Map<HalfEdge, HEVertex>();
     for (const face of group.triangles) {
         for (const edge of face.edges()) {
@@ -76,22 +47,11 @@ export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): Ext
         }
     }
 
-    // 1. Clone each BOUNDARY vertex AT THE SAME POSITION (distance 0) — the
-    // live drag moves these afterward via updateExtrudeDistance(). A
-    // boundary vertex needs a genuine clone because it plays two roles at
-    // once: the original stays behind to anchor the new wall and the
-    // untouched exterior mesh, while a fresh copy becomes part of the
-    // moving cap.
-    //
-    // A coplanar group can also have INTERIOR vertices that touch no
-    // boundary edge — e.g. a Cylinder cap is triangulated as a fan from a
-    // hub vertex out to the rim, and the hub is shared by every triangle in
-    // the group but never appears as a boundary-loop origin. Nothing
-    // outside the group references an interior vertex, so it doesn't need
-    // a second role or a clone — it can just move. Cloning it anyway (an
-    // earlier version of this function did) leaves the original behind as
-    // a dangling vertex with no real half-edge pointing at it, so interior
-    // vertices are tracked separately below and dragged in place instead.
+    // Clone each boundary vertex at distance 0; a boundary vertex needs a
+    // real clone since the original anchors the wall/exterior while the
+    // clone becomes part of the moving cap. Interior vertices (e.g. a
+    // Cylinder cap's hub) have nothing outside the group referencing them,
+    // so they're dragged in place instead of cloned.
     const groupVertices = new Set<HEVertex>();
     for (const face of group.triangles) {
         for (const v of face.vertices()) groupVertices.add(v);
@@ -112,12 +72,9 @@ export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): Ext
         basePositions.set(v, v.position.clone());
     }
 
-    // 2. Re-point every triangle in the group to the new vertices. Only
-    // `.vertex` (destination) fields are reassigned. Since each boundary
-    // edge's origin is DERIVED from the previous boundary edge's
-    // (also-reassigned) destination, this single pass correctly updates
-    // both endpoints of every boundary edge without touching `.prev`
-    // directly — verified by trace before this was first written.
+    // Re-point every triangle's destination in the group to the new
+    // vertices; each boundary edge's origin derives from the previous
+    // edge's (also reassigned) destination, so both endpoints update.
     for (const face of group.triangles) {
         for (const edge of face.edges()) {
             const replacement = oldToNew.get(edge.vertex);
@@ -125,15 +82,13 @@ export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): Ext
         }
     }
 
-    // 3. Build one wall quad (2 triangles) per boundary edge:
-    //   oldOrigin -> oldDest -> newDest -> newOrigin -> (back to oldOrigin)
-    // split along the oldOrigin-newDest diagonal into:
+    // One wall quad per boundary edge, split along the oldOrigin-newDest diagonal:
     //   bottomTri: oldOrigin, oldDest, newDest
     //   topTri:    oldOrigin, newDest, newOrigin
     interface Wall {
-        bottom: HalfEdge; // oldOrigin -> oldDest: twins with the original outside neighbor
-        right: HalfEdge; // oldDest -> newDest: vertical, twins with the next wall's left
-        left: HalfEdge; // newOrigin -> oldOrigin: vertical, twins with the previous wall's right
+        bottom: HalfEdge;
+        right: HalfEdge;
+        left: HalfEdge;
     }
     const wallByOldOrigin = new Map<HEVertex, Wall>();
     const originalBoundaryTwins = new Map<HalfEdge, HalfEdge | null>();
@@ -154,38 +109,27 @@ export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): Ext
         const top = findEdge(topTri, newDest, newOrigin);
         const left = findEdge(topTri, newOrigin, oldOrigin);
 
-        // Each wall's own internal diagonal twins with itself.
         bottomDiagonal.twin = topDiagonal;
         topDiagonal.twin = bottomDiagonal;
 
-        // Record oldEdge's pristine twin (the untouched exterior neighbor,
-        // or null if this was already a mesh boundary edge) before rewiring
-        // it below, so cancelExtrude() can restore this exact link. Without
-        // this, cancel deletes `bottom`/`top` while both this edge and its
-        // former neighbor are left with `.twin` pointing at the now-deleted
-        // half-edge — a dangling reference validate() can't detect, because
-        // each orphaned pair is still mutually consistent with itself.
+        // Record the pristine twin before rewiring, so cancel can restore
+        // it — otherwise a deleted wall edge leaves the neighbor dangling
+        // in a way validate() can't detect (each orphaned pair is still
+        // self-consistent).
         originalBoundaryTwins.set(oldEdge, oldEdge.twin);
 
-        // Bottom inherits the original boundary edge's twin — the untouched
-        // mesh geometry on the outside of the extruded face.
         bottom.twin = oldEdge.twin;
         if (oldEdge.twin) oldEdge.twin.twin = bottom;
 
-        // Top twins with the cap's own boundary edge for this span. After
-        // step 2, oldEdge now runs newOrigin -> newDest (both endpoints
-        // updated) — the exact reverse of `top` (newDest -> newOrigin) — so
-        // they are twins.
+        // oldEdge now runs newOrigin -> newDest after step 2 above — the
+        // exact reverse of `top` — so they're twins.
         top.twin = oldEdge;
         oldEdge.twin = top;
 
         wallByOldOrigin.set(oldOrigin, { bottom, right, left });
     }
 
-    // 4. Wire vertical wall-to-wall twins. This wall's `right`
-    // (oldDest -> newDest) twins with the next wall's `left`
-    // (newOrigin -> oldOrigin), where the next wall in boundary order starts
-    // where this one ends (next wall's oldOrigin === this wall's oldDest).
+    // wall-to-wall twins: this wall's right twins with the next wall's left
     for (let i = 0; i < boundaryInfo.length; i++) {
         const thisWall = wallByOldOrigin.get(boundaryInfo[i].oldOrigin)!;
         const nextInfo = boundaryInfo[(i + 1) % boundaryInfo.length];
@@ -201,9 +145,6 @@ export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): Ext
     return {
         mesh,
         normal,
-        // Both the boundary clones AND the in-place interior vertices need
-        // to be dragged; only the clones (createdVertices) get deleted on
-        // cancel.
         newVertices: [...createdVertices, ...interiorVertices],
         basePositions,
         newFaces,
@@ -213,13 +154,7 @@ export function beginFaceExtrude(mesh: HalfEdgeMesh, group: SelectableFace): Ext
     };
 }
 
-/**
- * Repositions the extruded vertices along the face normal to the given
- * distance, measured from each vertex's distance-0 base position (not
- * its current position), so repeated calls during a drag don't
- * accumulate floating-point error. Cheap: only updates positions, never
- * rebuilds topology. Distance may be negative (push inward) or zero.
- */
+/** Moves the extruded vertices along the face normal to `distance`, measured from each vertex's distance-0 base. */
 export function updateExtrudeDistance(handle: ExtrudeHandle, distance: number): void {
     for (const v of handle.newVertices) {
         const base = handle.basePositions.get(v)!;
@@ -228,15 +163,10 @@ export function updateExtrudeDistance(handle: ExtrudeHandle, distance: number): 
 }
 
 /**
- * Repositions vertex/tip-extrude geometry by an arbitrary 3D world-space
- * offset from each vertex's distance-0 base position. Unlike
- * updateExtrudeDistance() — correct for face extrude, where the face's own
- * normal is the one sensible push direction — a vertex "spike" has no
- * single correct direction: Blender lets you drag it anywhere, since it's
- * new geometry that isn't pulling an existing surface along with it.
- * `offset` is typically built by the caller from mouse movement projected
- * onto the camera's view plane (see ExtrudeTool), not constrained to
- * handle.normal at all.
+ * Moves vertex/tip-extrude geometry by an arbitrary 3D offset from each
+ * vertex's base position. A vertex spike has no single correct direction
+ * the way a face's normal does, so `offset` is typically built from mouse
+ * movement projected onto the camera's view plane.
  */
 export function updateExtrudeOffset(handle: ExtrudeHandle, offset: THREE.Vector3): void {
     for (const v of handle.newVertices) {
@@ -245,66 +175,39 @@ export function updateExtrudeOffset(handle: ExtrudeHandle, offset: THREE.Vector3
     }
 }
 
-/**
- * Confirms the extrude at its current position. A no-op beyond what
- * updateExtrudeDistance() already applied — kept as an explicit, named
- * step so calling code has a clear "I'm done" to pair with
- * cancelExtrude().
- */
+/** No-op beyond what updateExtrudeDistance()/updateExtrudeOffset() already applied. */
 export function commitExtrude(_handle: ExtrudeHandle): void {
     // Intentionally empty.
 }
 
-/**
- * Cancels an in-progress extrude: removes every vertex and face that
- * beginExtrude() created, and restores the group's triangles to their
- * exact original (edge -> vertex) assignment recorded before mutation —
- * not inferred from the resulting topology, so this is exact regardless
- * of mesh shape.
- */
+/** Removes everything beginExtrude() created and restores the group's original (edge -> vertex) assignment. */
 export function cancelExtrude(handle: ExtrudeHandle): void {
     const { mesh, newVertices, newFaces, originalAssignment, originalBoundaryTwins, createdVertices, basePositions } = handle;
 
-    // Restore the group's triangles to exactly what they pointed to before
-    // beginExtrude() ran.
     for (const [edge, originalVertex] of originalAssignment) {
         edge.vertex = originalVertex;
     }
 
-    // Restore each boundary edge's twin link to the untouched exterior
-    // neighbor (or null) it had before beginFaceExtrude() rewired it.
-    // Must happen before that wall geometry is filtered out below, so both
-    // sides of the original link are repaired rather than left pointing at
-    // a half-edge that's about to be deleted.
+    // Must happen before the wall geometry below is filtered out, so both
+    // sides of the link are repaired rather than left pointing at a
+    // half-edge that's about to be deleted.
     for (const [oldEdge, originalTwin] of originalBoundaryTwins) {
         oldEdge.twin = originalTwin;
         if (originalTwin) originalTwin.twin = oldEdge;
     }
 
-    // Snap every dragged vertex back to its pre-drag position. For the
-    // vertices about to be deleted below this is moot, but for vertices
-    // that were dragged IN PLACE rather than cloned (beginFaceExtrude's
-    // interior vertices — e.g. a Cylinder cap's hub) this is the only
-    // place their position gets restored, since they're never removed.
+    // Interior vertices dragged in place (never cloned, never removed) only get restored here.
     for (const v of newVertices) {
         const base = basePositions.get(v);
         if (base) v.position.copy(base);
     }
 
-    // Remove the new faces (and their half-edges) and the genuinely new
-    // vertices. Vertices present in newVertices but NOT createdVertices
-    // were only dragged in place (never cloned) and must be left alone —
-    // they're original mesh vertices the just-restored triangles above
-    // still reference.
     const newFaceSet = new Set(newFaces);
     const createdVertexSet = new Set(createdVertices);
     mesh.faces = mesh.faces.filter((f) => !newFaceSet.has(f));
     mesh.halfEdges = mesh.halfEdges.filter((he) => !newFaceSet.has(he.face));
     mesh.vertices = mesh.vertices.filter((v) => !createdVertexSet.has(v));
 
-    // Original vertices may have had .halfEdge pointing at a now-removed
-    // wall edge — repoint to a surviving half-edge that still terminates
-    // there.
     for (const [edge, originalVertex] of originalAssignment) {
         if (!originalVertex.halfEdge || newFaceSet.has(originalVertex.halfEdge.face)) {
             originalVertex.halfEdge = edge;
@@ -315,45 +218,26 @@ export function cancelExtrude(handle: ExtrudeHandle): void {
 }
 
 /**
- * Begins an extrude on a single selected vertex, performing the topology
- * mutation immediately at distance 0 (new vertex exists at the same
- * position as the original — invisible until moved).
+ * Extrudes a single selected vertex, producing a "whisker" rather than
+ * new surface: the vertex's whole ring of connectivity transfers to a new
+ * vertex, and the original is left connected to it by one edge sticking
+ * out as a spike — matching Blender's behavior for extruding a lone
+ * vertex.
  *
- * Unlike face extrude, this does NOT create new wall surface — extruding
- * a single existing mesh vertex produces a "whisker": the original
- * vertex's entire ring of connectivity transfers to the new vertex (the
- * new vertex takes over the surrounding surface), and the original
- * vertex is left connected to the new one by a single edge, sticking out
- * as a spike. This matches Blender's actual behavior for E on a lone
- * vertex (as opposed to an edge or face, which DO sweep out new surface).
- *
- * Since every half-edge in this structure must belong to a triangular
- * face (see HEFace's required `face` field throughout HalfEdgeMesh), the
- * single new edge is represented as a pair of degenerate (zero-area at
- * distance 0) triangles sharing that edge, using a fresh SYNTHETIC third
- * corner (not a reused mesh vertex — see the synthetic-corner comment
- * inline below for why). Both triangles' other two edges are genuine new
- * boundary edges (no twin) — expected, same as any mesh boundary (e.g.
- * PlaneGeometry), not a validation error.
- *
- * Only supports INTERIOR vertices (full closed ring) — see
- * HalfEdgeMesh.getVertexRing(), which throws for boundary vertices.
+ * Since every half-edge must belong to a triangle, the new spike edge is
+ * represented as a pair of degenerate (zero-area at distance 0) triangles
+ * sharing it, with a synthetic third corner. Only supports interior
+ * vertices — see HalfEdgeMesh.getVertexRing().
  */
 export function beginVertexExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): ExtrudeHandle {
     const ring = mesh.getVertexRing(vertex);
 
-    // Average normal of the triangles touching this vertex — used as the
-    // whisker's drag direction. A single vertex has no inherent "normal"
-    // the way a flat face does, so this is the closest reasonable analog.
     const normal = new THREE.Vector3();
     for (const spoke of ring) {
         normal.add(spoke.face.normal());
     }
     normal.divideScalar(ring.length).normalize();
 
-    // Record the exact original (edge -> vertex) assignment for every
-    // half-edge that terminates at `vertex` within the ring's triangles,
-    // before any mutation, so cancel can restore it exactly.
     const originalAssignment = new Map<HalfEdge, HEVertex>();
     for (const spoke of ring) {
         const intoVertex = spoke.next.next; // terminates at `vertex` in this triangle
@@ -362,46 +246,26 @@ export function beginVertexExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): Extrud
 
     const newVertex = new HEVertex(mesh.vertices.length, vertex.position.clone());
     mesh.vertices.push(newVertex);
-    // `vertex` — not `newVertex` — is the one that gets dragged; see the
-    // note on the returned `newVertices` below for why.
+    // `vertex` (not newVertex) is what gets dragged — see the returned newVertices below.
     const basePositions = new Map<HEVertex, THREE.Vector3>([[vertex, vertex.position.clone()]]);
 
-    // Reference scale for the synthetic corner's offset below: the average
-    // length of this vertex's own ring spokes, so the whisker's thickness
-    // looks proportionate whether the mesh is tiny or huge.
     let avgSpokeLength = 0;
     for (const spoke of ring) {
         avgSpokeLength += spoke.vertex.position.distanceTo(vertex.position);
     }
     avgSpokeLength /= ring.length;
 
-    // Reassign the ring off `vertex` onto `newVertex`. Verified by trace:
-    // reassigning only each spoke's "into vertex" destination correctly
-    // moves BOTH endpoints of every ring edge, since origins are derived
-    // from .prev.vertex, which is exactly the previous ring edge's
-    // (also-reassigned) destination.
+    // Reassigning just each spoke's "into vertex" destination moves both
+    // endpoints of every ring edge, since origins derive from .prev.vertex.
     for (const spoke of ring) {
         spoke.next.next.vertex = newVertex;
     }
 
-    // Build the whisker: 2 triangles sharing the vertex -> newVertex edge.
-    // The third corner is a SYNTHETIC vertex — not reused from the mesh —
-    // because reusing a real neighbor (as an earlier version of this
-    // function did) creates a directed edge to that neighbor which a LATER
-    // extrude of the same tip vertex would collide with (that neighbor
-    // already has an edge from/to this whisker).
-    //
-    // Critically, the synthetic corner needs a genuine offset AWAY from
-    // vertex/newVertex, not a third clone sitting exactly on top of one of
-    // them — two coincident corners make a triangle's area exactly zero
-    // *no matter where the third corner ends up*, so a whisker built that
-    // way is topologically real but renders as literally nothing, at any
-    // drag distance. Offsetting it a small, fixed distance perpendicular
-    // to the drag direction — and leaving it un-dragged, anchored at the
-    // base alongside `newVertex` — makes the whisker a thin wedge that
-    // tapers from that small base width down to a point at the dragged
-    // tip, which is the closest a triangle-only mesh can get to Blender's
-    // true 1D edge extrude.
+    // Whisker: 2 triangles sharing the vertex -> newVertex edge. The third
+    // corner is synthetic (not a reused mesh vertex) so a later chained
+    // extrude of this same tip can't collide with existing geometry, and
+    // it needs a real offset (not a coincident clone) or the triangles are
+    // permanently zero-area.
     const perpendicular = pickPerpendicular(normal);
     const offsetAmount = Math.max(avgSpokeLength * 0.12, 0.02);
     const syntheticCorner = new HEVertex(
@@ -413,31 +277,17 @@ export function beginVertexExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): Extrud
     const triA = makeTriangle(mesh, vertex, newVertex, syntheticCorner);
     const triB = makeTriangle(mesh, newVertex, vertex, syntheticCorner);
 
-    const sharedA = findEdge(triA, vertex, newVertex); // vertex -> newVertex
-    const sharedB = findEdge(triB, newVertex, vertex); // newVertex -> vertex
+    const sharedA = findEdge(triA, vertex, newVertex);
+    const sharedB = findEdge(triB, newVertex, vertex);
     sharedA.twin = sharedB;
     sharedB.twin = sharedA;
-    // The remaining 4 edges (newVertex->syntheticCorner, syntheticCorner->vertex
-    // in triA; vertex->syntheticCorner, syntheticCorner->newVertex in triB) are
-    // genuine boundary edges — nothing on the other side of them, same as
-    // any mesh boundary. Left with twin === null intentionally.
+    // The remaining 4 edges are genuine boundary edges (twin === null), same as any mesh boundary.
     syntheticCorner.halfEdge = findEdge(triA, newVertex, syntheticCorner);
 
-    // CRITICAL: explicitly refresh vertex.halfEdge to point at sharedB
-    // (newVertex -> vertex, an edge that genuinely terminates at vertex).
-    // makeTriangle()'s "if (!x.halfEdge) x.halfEdge = ..." guard only fills
-    // in a MISSING reference — it will NOT overwrite vertex.halfEdge if it
-    // already pointed somewhere (which it always does after mesh
-    // construction). Left unfixed, vertex.halfEdge stays pointed at
-    // whatever edge it had BEFORE the ring reassignment moved that edge
-    // over to newVertex — a stale reference that silently breaks any
-    // future getVertexRing(vertex) call, since that method starts its walk
-    // from vertex.halfEdge.twin.
+    // makeTriangle()'s "if (!x.halfEdge)" guard won't overwrite an
+    // existing reference, so vertex.halfEdge needs an explicit refresh
+    // here or it stays stale after the ring reassignment above.
     vertex.halfEdge = sharedB;
-    // Same reasoning applies to newVertex, though it's freshly created so
-    // its halfEdge is definitely null right now — set it explicitly anyway
-    // rather than rely on makeTriangle's fallback ordering, for clarity and
-    // to be robust if construction order here ever changes.
     newVertex.halfEdge = sharedA;
 
     mesh.invalidateSelectableFaces();
@@ -445,50 +295,28 @@ export function beginVertexExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): Extrud
     return {
         mesh,
         normal,
-        // Only `vertex` (the ORIGINAL vertex) is dragged, not `newVertex`
-        // and not `syntheticCorner`. The ring reassignment above hands the
-        // surrounding surface to `newVertex`, so it must stay exactly
-        // where the original vertex was — dragging it instead (an earlier
-        // version of this function did) drags the whole neighboring ring
-        // along with it. `syntheticCorner` stays anchored at its offset
-        // near the base too, so the whisker tapers from a small fixed
-        // width down to a point at the tip rather than staying a constant
-        // width or (worse) collapsing to zero area — see the comment above
-        // where it's created. `vertex` is the free end left "sticking out
-        // as a spike," per this function's own doc comment above.
         newVertices: [vertex],
         basePositions,
         newFaces: [triA, triB],
         originalAssignment,
-        // Vertex extrude never rewires an existing edge's twin (the ring's
-        // edges only get reassigned to a new vertex, and the whisker's own
-        // twin pair is between two brand-new edges) — nothing to restore.
         originalBoundaryTwins: new Map(),
-        // newVertex and syntheticCorner are genuinely new objects; `vertex`
-        // is the original mesh vertex and must NOT be deleted on cancel —
-        // only its position gets reset, handled generically in cancelExtrude.
         createdVertices: [newVertex, syntheticCorner],
     };
 }
 
 /**
- * A vertex is a "tip" (the end of an existing whisker, produced by a
- * prior beginVertexExtrude) if it has exactly one twinned (spine) edge
- * and exactly 2 boundary (twin === null) edges. getVertexRing() rejects
- * such vertices since their ring doesn't close; this detects that
- * specific, expected shape so beginTipExtrude() can handle it instead of
- * just failing.
+ * A vertex is a whisker "tip" if it has exactly one twinned (spine) edge
+ * and 2 boundary edges — getVertexRing() rejects this shape since it
+ * doesn't close, so beginTipExtrude() handles it separately.
  */
 function detectTipVertex(mesh: HalfEdgeMesh, vertex: HEVertex): { spine: HalfEdge; boundary: [HalfEdge, HalfEdge] } | null {
     const touching = mesh.halfEdges.filter((e) => e.origin === vertex || e.vertex === vertex);
     const spineEdges = touching.filter((e) => e.twin !== null);
     const boundaryEdges = touching.filter((e) => e.twin === null);
 
-    // A twinned spine edge appears twice in `touching` (both directions),
-    // so 2 spine entries + exactly 2 boundary entries matches a tip.
+    // A twinned spine edge appears twice (both directions), so 2 spine + 2 boundary entries matches a tip.
     if (spineEdges.length !== 2 || boundaryEdges.length !== 2) return null;
 
-    // Normalize to the OUTGOING spine half-edge (origin === vertex).
     const spine = spineEdges.find((e) => e.origin === vertex);
     if (!spine) return null;
 
@@ -496,24 +324,11 @@ function detectTipVertex(mesh: HalfEdgeMesh, vertex: HEVertex): { spine: HalfEdg
 }
 
 /**
- * Begins an extrude on the TIP of an existing whisker (a vertex
- * previously created by beginVertexExtrude, now itself selected for
- * further extrusion) — extends the whisker by one more segment.
- *
- * The tip's existing 2 degenerate triangles (which currently hold both
- * its spine connection back to the rest of the mesh AND its boundary
- * "closure" edges) are fully rebuilt with a NEW tip vertex taking over
- * the old tip's role in them, then a fresh whisker pair (same pattern as
- * beginVertexExtrude, with its own synthetic corner) connects the old
- * tip to the new one. This two-step rebuild is necessary rather than a
- * simple reassignment because the old tip and new tip must coexist as
- * DIFFERENT points within what would otherwise be the same triangle —
- * impossible in a 3-cornered face — so those faces have to be replaced,
- * not just relabeled.
- *
- * Falls back to a regular error (via detectTipVertex returning null) if
- * `vertex` isn't a genuine tip shape — callers should attempt
- * beginVertexExtrude first and only try this if that throws.
+ * Extends an existing whisker by one segment from its tip. The tip's 2
+ * degenerate triangles are rebuilt with a new tip vertex taking over the
+ * old tip's role, then a fresh whisker pair connects old tip to new tip —
+ * they have to coexist as different points, which a 3-cornered face can't
+ * do, so the faces are replaced rather than relabeled.
  */
 export function beginTipExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): ExtrudeHandle {
     const tip = detectTipVertex(mesh, vertex);
@@ -523,16 +338,10 @@ export function beginTipExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): ExtrudeHa
         );
     }
     const { spine, boundary } = tip;
-    const spinePartner = spine.vertex; // S: the real mesh-surface point this tip connects to
+    const spinePartner = spine.vertex;
 
-    // Direction: the tip's own spine, since there's no surrounding surface
-    // to average a normal from (that's the whole point of a tip).
     const normal = vertex.position.clone().sub(spinePartner.position).normalize();
 
-    // Record the tip's OLD (edge -> vertex) assignment across both its
-    // degenerate faces, before any mutation, so cancel can restore it
-    // exactly. This includes the spine edge's own destination where
-    // relevant and both boundary edges.
     const originalAssignment = new Map<HalfEdge, HEVertex>();
     for (const face of [spine.face, spine.twin!.face]) {
         for (const edge of face.edges()) {
@@ -540,28 +349,14 @@ export function beginTipExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): ExtrudeHa
         }
     }
 
-    // 1. Create the new tip vertex (distance 0, same position as the old tip).
     const newVertex = new HEVertex(mesh.vertices.length, vertex.position.clone());
     mesh.vertices.push(newVertex);
-    // `vertex` (the OLD tip) is what gets dragged, matching
-    // beginVertexExtrude — see the returned `newVertices` below.
     const basePositions = new Map<HEVertex, THREE.Vector3>([[vertex, vertex.position.clone()]]);
-    // 2. Rebuild the tip's 2 old degenerate faces with newVertex replacing
-    // vertex everywhere. Every half-edge in EITHER face that terminated at
-    // `vertex` gets reassigned to `newVertex` — this includes the spine's
-    // destination-facing side and both boundary edges' vertex-facing sides.
+
     for (const [edge, oldTarget] of originalAssignment) {
         if (oldTarget === vertex) edge.vertex = newVertex;
     }
 
-    // 3. Attach a fresh whisker pair connecting the OLD tip (now vacated,
-    // touching nothing) to the NEW tip — identical pattern to
-    // beginVertexExtrude's own whisker, including giving the synthetic
-    // corner a real perpendicular offset (not a coincident clone) so the
-    // whisker actually renders instead of staying permanently zero-area —
-    // see the comment in beginVertexExtrude for why. Reference scale here
-    // is the existing spine's length (the segment this tip is already
-    // attached to the mesh by).
     const spineLength = vertex.position.distanceTo(spinePartner.position);
     const perpendicular = pickPerpendicular(normal);
     const offsetAmount = Math.max(spineLength * 0.12, 0.02);
@@ -578,50 +373,32 @@ export function beginTipExtrude(mesh: HalfEdgeMesh, vertex: HEVertex): ExtrudeHa
     sharedA.twin = sharedB;
     sharedB.twin = sharedA;
 
-    // vertex now only touches this new whisker pair; refresh its reference.
     vertex.halfEdge = sharedB;
     newVertex.halfEdge = sharedA;
 
-    void boundary; // boundary edges were only needed to CONFIRM the tip shape in detectTipVertex; no longer referenced directly once reassignment (step 2) handles them generically
+    void boundary; // only needed to confirm the tip shape in detectTipVertex
 
     mesh.invalidateSelectableFaces();
 
     return {
         mesh,
         normal,
-        // `vertex` (the OLD tip) is dragged, not `newVertex` or
-        // `syntheticCorner` — step 2 rebuilt the spine-connected faces to
-        // reference `newVertex`, so it must stay fixed at the joint, and
-        // `syntheticCorner` stays anchored near it so the whisker tapers to
-        // a point at the tip. Same reasoning as beginVertexExtrude.
         newVertices: [vertex],
         basePositions,
         newFaces: [triA, triB],
         originalAssignment,
-        // Same reasoning as beginVertexExtrude: no pre-existing edge's twin
-        // is ever rewired here, so there's nothing for cancel to restore.
         originalBoundaryTwins: new Map(),
         createdVertices: [newVertex, syntheticCorner],
     };
 }
 
-/**
- * Returns a unit vector perpendicular to `dir`, used to give a whisker's
- * synthetic corner a real offset instead of sitting exactly on top of
- * another corner (see beginVertexExtrude/beginTipExtrude). Crosses with a
- * reference axis that isn't (nearly) parallel to `dir`, falling back to a
- * second reference if the first one is too close.
- */
+/** A unit vector perpendicular to `dir`, for a whisker's synthetic corner offset. */
 function pickPerpendicular(dir: THREE.Vector3): THREE.Vector3 {
     const reference = Math.abs(dir.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
     return new THREE.Vector3().crossVectors(dir, reference).normalize();
 }
 
-/**
- * Creates a new triangular HEFace with 3 fresh half-edges connecting the
- * given vertices in order, wired into a closed next/prev loop. Does not
- * set any twin — callers wire those up based on context.
- */
+/** Creates a new triangular HEFace with 3 fresh half-edges. Does not set twins. */
 function makeTriangle(mesh: HalfEdgeMesh, a: HEVertex, b: HEVertex, c: HEVertex): HEFace {
     const face = new HEFace(mesh.faces.length);
 
@@ -656,7 +433,7 @@ function makeTriangle(mesh: HalfEdgeMesh, a: HEVertex, b: HEVertex, c: HEVertex)
     return face;
 }
 
-/** Finds the half-edge of `face` running from `from` to `to`. Throws if not found (internal invariant). */
+/** Finds the half-edge of `face` running from `from` to `to`. */
 function findEdge(face: HEFace, from: HEVertex, to: HEVertex): HalfEdge {
     for (const e of face.edges()) {
         if (e.origin === from && e.vertex === to) return e;

@@ -7,7 +7,6 @@ export type ViewPreset = 'front' | 'back' | 'right' | 'left' | 'top' | 'bottom';
 export class Viewport {
   scene: THREE.Scene;
 
-  // Both cameras stay alive; only one is ever "active" at a time.
   perspectiveCamera: THREE.PerspectiveCamera;
   orthographicCamera: THREE.OrthographicCamera;
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
@@ -15,29 +14,20 @@ export class Viewport {
   renderer: THREE.WebGLRenderer;
   controls: OrbitControls;
 
-  // Distance from target, preserved when switching camera types so the
-  // ortho zoom roughly matches what perspective was showing.
   private orbitRadius = 7.2;
 
-  // Track objects for later operations (like selection or clearing)
   private meshes: THREE.Mesh[] = [];
 
-  // Parallel map from a rendered THREE.Mesh to its editable topology.
   // Only meshes added via addPrimitive() have an entry here — helper
-  // objects (grid, axes) and anything added via the lower-level addMesh()
-  // are display-only and have no editable half-edge structure.
+  // objects (grid, axes) and anything added via addMesh() are display-only.
   private halfEdgeMeshes = new Map<THREE.Mesh, HalfEdgeMesh>();
 
-  // Persistent display mode: new meshes pick this up at creation time,
-  // not just meshes that existed when the toggle was last clicked.
   private wireframeEnabled = false;
 
   constructor() {
-    // Scene
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x1a1a1a);
 
-    // Perspective camera (default)
     this.perspectiveCamera = new THREE.PerspectiveCamera(
         75,
         window.innerWidth / window.innerHeight,
@@ -47,8 +37,7 @@ export class Viewport {
     this.perspectiveCamera.position.set(4, 4, 6);
     this.perspectiveCamera.lookAt(0, 0, 0);
 
-    // Orthographic camera, framed to roughly match the perspective view
-    // at the same distance. Frustum size is refit on resize/zoom.
+    // Framed to roughly match the perspective view at the same distance.
     const aspect = window.innerWidth / window.innerHeight;
     const orthoSize = 5;
     this.orthographicCamera = new THREE.OrthographicCamera(
@@ -64,18 +53,15 @@ export class Viewport {
 
     this.camera = this.perspectiveCamera;
 
-    // Renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(window.devicePixelRatio);
     document.body.appendChild(this.renderer.domElement);
 
-    // Controls
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
 
-    // Lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     this.scene.add(ambientLight);
 
@@ -83,25 +69,20 @@ export class Viewport {
     dirLight.position.set(5, 10, 5);
     this.scene.add(dirLight);
 
-    // Grid
     const grid = new THREE.GridHelper(30, 30, 0x444444, 0x333333);
     this.scene.add(grid);
 
-    // Axes (red=X, green=Y, blue=Z)
     const axes = new THREE.AxesHelper(2);
     this.scene.add(axes);
 
-    // Handle window resize
     window.addEventListener('resize', () => {
       this.updateCameraAspect();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // Numpad shortcuts (Blender-style)
     window.addEventListener('keydown', (e) => this.handleKeydown(e));
   }
 
-  /** Keeps aspect/frustum in sync with the canvas for whichever camera is active. */
   private updateCameraAspect(): void {
     const aspect = window.innerWidth / window.innerHeight;
     if (this.camera instanceof THREE.PerspectiveCamera) {
@@ -117,8 +98,7 @@ export class Viewport {
   }
 
   private handleKeydown(e: KeyboardEvent): void {
-    // Only react to numpad keys; ignore top-row digits so typing elsewhere
-    // (e.g. a focused text input) isn't hijacked.
+    // Numpad only — ignore top-row digits so typing elsewhere isn't hijacked.
     switch (e.code) {
       case 'Numpad5':
         this.toggleCameraType();
@@ -132,7 +112,6 @@ export class Viewport {
       case 'Numpad7':
         this.setView(e.shiftKey ? 'bottom' : 'top');
         break;
-        // Plan also lists dedicated back(2)/left(4)/bottom(9) keys.
       case 'Numpad2':
         this.setView('back');
         break;
@@ -148,7 +127,6 @@ export class Viewport {
     e.preventDefault();
   }
 
-  /** Swaps the active camera between perspective and orthographic, preserving position/target. */
   toggleCameraType(): void {
     const isPerspective = this.camera instanceof THREE.PerspectiveCamera;
     const from = this.camera;
@@ -164,9 +142,7 @@ export class Viewport {
     this.controls.update();
   }
 
-  /** Snaps to a standard orthographic view, Blender numpad style. */
   setView(preset: ViewPreset): void {
-    // Numpad views are orthographic by convention.
     if (this.camera instanceof THREE.PerspectiveCamera) {
       this.toggleCameraType();
     }
@@ -185,7 +161,7 @@ export class Viewport {
     const dir = dirs[preset];
     this.camera.position.copy(target.clone().addScaledVector(dir, dist));
 
-    // Avoid gimbal-lock artifacts when looking straight down/up.
+    // Avoid gimbal-lock artifacts looking straight down/up.
     const up = preset === 'top' ? new THREE.Vector3(0, 0, -1)
         : preset === 'bottom' ? new THREE.Vector3(0, 0, 1)
             : new THREE.Vector3(0, 1, 0);
@@ -194,7 +170,6 @@ export class Viewport {
     this.controls.update();
   }
 
-  /** Toggles wireframe rendering on all tracked meshes, and on any mesh added afterward. */
   setWireframe(enabled: boolean): void {
     this.wireframeEnabled = enabled;
     for (const mesh of this.meshes) {
@@ -216,7 +191,7 @@ export class Viewport {
       color,
       roughness: 0.3,
       metalness: 0.1,
-      side: THREE.DoubleSide, // useful for editing operations
+      side: THREE.DoubleSide,
       wireframe: this.wireframeEnabled,
     });
     const mesh = new THREE.Mesh(geometry, material);
@@ -226,12 +201,7 @@ export class Viewport {
     return mesh;
   }
 
-  /**
-   * Adds an editable primitive: renders a THREE.Mesh derived from the given
-   * HalfEdgeMesh's current topology, and keeps the two linked so later
-   * operations (extrude, bevel, loop cut, scale) can mutate the topology
-   * and call refreshPrimitive() to push the change to screen.
-   */
+  /** Adds an editable primitive, linking a rendered mesh to its HalfEdgeMesh so operations can mutate topology and refreshPrimitive() to sync it to screen. */
   addPrimitive(
       halfEdgeMesh: HalfEdgeMesh,
       color: number = 0xffffff,
@@ -243,21 +213,15 @@ export class Viewport {
     return mesh;
   }
 
-  /** Returns every mesh added via addPrimitive() — i.e. every mesh with editable half-edge topology, for raycasting/selection. */
   getPrimitiveMeshes(): THREE.Mesh[] {
     return Array.from(this.halfEdgeMeshes.keys());
   }
 
-  /** Returns the editable topology behind a mesh added via addPrimitive(), if any. */
   getHalfEdgeMesh(mesh: THREE.Mesh): HalfEdgeMesh | undefined {
     return this.halfEdgeMeshes.get(mesh);
   }
 
-  /**
-   * Rebuilds a mesh's displayed geometry from its current HalfEdgeMesh
-   * topology. Call this after any operation that mutates the topology
-   * (extrude, bevel, loop cut, scale) so the change becomes visible.
-   */
+  /** Call after any operation that mutates a mesh's topology, to push the change to screen. */
   refreshPrimitive(mesh: THREE.Mesh): void {
     const halfEdgeMesh = this.halfEdgeMeshes.get(mesh);
     if (!halfEdgeMesh) return;
@@ -265,9 +229,6 @@ export class Viewport {
     mesh.geometry = halfEdgeMesh.toBufferGeometry();
   }
 
-  /**
-   * Remove all meshes from the scene (e.g., "Clear Scene").
-   */
   clearMeshes(): void {
     for (const mesh of this.meshes) {
       this.scene.remove(mesh);
