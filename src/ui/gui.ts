@@ -10,6 +10,7 @@ import type { ScaleTool } from '../operations/ScaleTool.ts';
 import type { LoopCutTool } from '../operations/LoopCutTool.ts';
 import type { BevelTool } from '../operations/BevelTool.ts';
 import type { MoveTool } from '../operations/MoveTool.ts';
+import type { DeleteTool } from '../operations/DeleteTool.ts';
 import type { InteractionLock } from '../operations/InteractionLock.ts';
 
 const SPAWN_SPACING = 2.5;
@@ -150,7 +151,7 @@ function setupResizableSize(pane: Pane): void {
     });
 }
 
-export function setupGUI(viewport: Viewport, selectionManager: SelectionManager, moveTool: MoveTool, extrudeTool: ExtrudeTool, scaleTool: ScaleTool, loopCutTool: LoopCutTool, bevelTool: BevelTool, interactionLock: InteractionLock) {
+export function setupGUI(viewport: Viewport, selectionManager: SelectionManager, moveTool: MoveTool, deleteTool: DeleteTool, extrudeTool: ExtrudeTool, scaleTool: ScaleTool, loopCutTool: LoopCutTool, bevelTool: BevelTool, interactionLock: InteractionLock) {
     const pane = new Pane({ title: 'WebGL Modeler' });
     pane.element.style.width = '300px';
     pane.element.style.position = 'fixed';
@@ -304,6 +305,7 @@ export function setupGUI(viewport: Viewport, selectionManager: SelectionManager,
     const operationsFolder = pane.addFolder({ title: 'Operations' });
 
     setupOperationStatusRow(operationsFolder, 'G', 'Move', 'Select any part of an object, press G to move it', (l) => moveTool.onStatus(l));
+    setupOperationStatusRow(operationsFolder, 'Del', 'Delete', 'Select a face, edge, or vertex, press Delete to remove it', (l) => deleteTool.onStatus(l));
     setupOperationStatusRow(operationsFolder, 'E', 'Extrude', 'Select a face or vertex, press E to extrude', (l) => extrudeTool.onStatus(l));
     setupOperationStatusRow(operationsFolder, 'S', 'Scale', 'Select a face or edge, press S to scale', (l) => scaleTool.onStatus(l));
     setupOperationStatusRow(operationsFolder, '^R', 'Loop Cut', 'Select an edge, press Ctrl+R to loop cut', (l) => loopCutTool.onStatus(l));
