@@ -3,6 +3,7 @@ import type { SelectionManager } from '../selection/SelectionManager';
 import { beginLoopCut, commitLoopCut, cancelLoopCut } from './loopCut';
 import type { LoopCutHandle } from './loopCut';
 import type { InteractionLock } from './InteractionLock';
+import type { History } from './History';
 
 /**
  * Loop Cut: select an edge, press Ctrl+R to cut. No drag phase — the ring
@@ -15,6 +16,7 @@ export class LoopCutTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
+    private history: History;
 
     private static readonly LOCK_NAME = 'loopCut';
 
@@ -31,10 +33,11 @@ export class LoopCutTool {
         for (const listener of this.statusListeners) listener(message);
     }
 
-    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock) {
+    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock, history: History) {
         this.viewport = viewport;
         this.selectionManager = selectionManager;
         this.lock = lock;
+        this.history = history;
 
         window.addEventListener('keydown', (e) => this.handleKeydown(e));
         window.addEventListener('click', (e) => this.handleClick(e), true);
@@ -74,8 +77,10 @@ export class LoopCutTool {
         }
 
         try {
+            this.history.beginAction('Loop Cut');
             this.handle = beginLoopCut(selection.halfEdgeMesh, selection.edge);
         } catch (err) {
+            this.history.discardAction();
             this.notifyStatus(`Can't loop cut here: ${(err as Error).message}`);
             this.handle = null;
             this.lock.release(LoopCutTool.LOCK_NAME);
@@ -104,6 +109,7 @@ export class LoopCutTool {
     private confirm(): void {
         if (!this.handle) return;
         commitLoopCut(this.handle);
+        this.history.commitAction();
         this.finish();
     }
 
@@ -111,6 +117,7 @@ export class LoopCutTool {
         if (!this.handle) return;
         const mesh = this.handle.mesh;
         cancelLoopCut(this.handle);
+        this.history.discardAction();
         for (const m of this.viewport.getPrimitiveMeshes()) {
             if (this.viewport.getHalfEdgeMesh(m) === mesh) this.viewport.refreshPrimitive(m);
         }

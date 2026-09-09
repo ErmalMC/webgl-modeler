@@ -12,6 +12,7 @@ import type { BevelTool } from '../operations/BevelTool.ts';
 import type { MoveTool } from '../operations/MoveTool.ts';
 import type { DeleteTool } from '../operations/DeleteTool.ts';
 import type { InteractionLock } from '../operations/InteractionLock.ts';
+import type { History } from '../operations/History.ts';
 
 const SPAWN_SPACING = 2.5;
 const SPAWN_PER_ROW = 5;
@@ -151,7 +152,7 @@ function setupResizableSize(pane: Pane): void {
     });
 }
 
-export function setupGUI(viewport: Viewport, selectionManager: SelectionManager, moveTool: MoveTool, deleteTool: DeleteTool, extrudeTool: ExtrudeTool, scaleTool: ScaleTool, loopCutTool: LoopCutTool, bevelTool: BevelTool, interactionLock: InteractionLock) {
+export function setupGUI(viewport: Viewport, selectionManager: SelectionManager, moveTool: MoveTool, deleteTool: DeleteTool, extrudeTool: ExtrudeTool, scaleTool: ScaleTool, loopCutTool: LoopCutTool, bevelTool: BevelTool, interactionLock: InteractionLock, history: History) {
     const pane = new Pane({ title: 'WebGL Modeler' });
     pane.element.style.width = '300px';
     pane.element.style.position = 'fixed';
@@ -228,7 +229,6 @@ export function setupGUI(viewport: Viewport, selectionManager: SelectionManager,
         step: 0.1,
     });
 
-    let spawnCount = 0;
     primitivesFolder.addButton({ title: 'Add Primitive' }).on('click', () => {
         const geometry = createPrimitive(primitiveParams.type, primitiveParams.size);
         const halfEdgeMesh = HalfEdgeMesh.fromBufferGeometry(geometry);
@@ -238,20 +238,26 @@ export function setupGUI(viewport: Viewport, selectionManager: SelectionManager,
             console.error(`HalfEdgeMesh validation failed for new ${primitiveParams.type}:`, result.errors);
         }
 
-        const col = spawnCount % SPAWN_PER_ROW;
-        const row = Math.floor(spawnCount / SPAWN_PER_ROW);
+        // Derived fresh each time rather than a tracked counter, so grid
+        // layout stays correct after undo/redo changes the primitive count.
+        const spawnIndex = viewport.getPrimitiveMeshes().length;
+        const col = spawnIndex % SPAWN_PER_ROW;
+        const row = Math.floor(spawnIndex / SPAWN_PER_ROW);
         const position = new THREE.Vector3(col * SPAWN_SPACING, 0, row * SPAWN_SPACING);
+
+        history.beginAction('Add Primitive');
         viewport.addPrimitive(halfEdgeMesh, 0xffffff, position);
-        spawnCount++;
+        history.commitAction();
     });
 
     primitivesFolder.addButton({ title: 'Clear Scene' }).on('click', () => {
         // Refuse while a modal tool is mid-drag — its handle would end up
         // pointing at geometry that's about to be deleted.
         if (interactionLock.isLocked()) return;
+        history.beginAction('Clear Scene');
         viewport.clearMeshes();
-        spawnCount = 0;
         selectionManager.clearSelection();
+        history.commitAction();
     });
 
     // --- Selection section --------------------------------------------------
@@ -310,6 +316,12 @@ export function setupGUI(viewport: Viewport, selectionManager: SelectionManager,
     setupOperationStatusRow(operationsFolder, 'S', 'Scale', 'Select a face or edge, press S to scale', (l) => scaleTool.onStatus(l));
     setupOperationStatusRow(operationsFolder, '^R', 'Loop Cut', 'Select an edge, press Ctrl+R to loop cut', (l) => loopCutTool.onStatus(l));
     setupOperationStatusRow(operationsFolder, '^B', 'Bevel', 'Select an edge, press Ctrl+B to bevel', (l) => bevelTool.onStatus(l));
+
+    // --- History section -----------------------------------------------
+    const historyFolder = pane.addFolder({ title: 'History' });
+    setupOperationStatusRow(historyFolder, '^Z', 'Undo/Redo', 'Ctrl+Z to undo, Ctrl+Shift+Z to redo', (l) => history.onStatus(l));
+    historyFolder.addButton({ title: 'Undo' }).on('click', () => history.undo());
+    historyFolder.addButton({ title: 'Redo' }).on('click', () => history.redo());
 
     // --- Display section ---------------------------------------------------
     const displayFolder = pane.addFolder({ title: 'Display' });

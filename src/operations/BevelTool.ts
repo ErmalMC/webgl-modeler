@@ -3,6 +3,7 @@ import type { SelectionManager } from '../selection/SelectionManager';
 import { beginBevel, commitBevel, cancelBevel } from './bevel';
 import type { BevelHandle } from './bevel';
 import type { InteractionLock } from './InteractionLock';
+import type { History } from './History';
 
 /**
  * Bevel: select an edge, press Ctrl+B to start. Like Loop Cut, there's no
@@ -18,6 +19,7 @@ export class BevelTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
+    private history: History;
 
     private static readonly LOCK_NAME = 'bevel';
     private static readonly DEFAULT_WIDTH = 0.2;
@@ -47,10 +49,11 @@ export class BevelTool {
         for (const listener of this.statusListeners) listener(message);
     }
 
-    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock) {
+    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock, history: History) {
         this.viewport = viewport;
         this.selectionManager = selectionManager;
         this.lock = lock;
+        this.history = history;
 
         window.addEventListener('keydown', (e) => this.handleKeydown(e));
         window.addEventListener('pointermove', (e) => this.handlePointerMove(e));
@@ -94,8 +97,10 @@ export class BevelTool {
         this.currentWidth = BevelTool.DEFAULT_WIDTH;
 
         try {
+            this.history.beginAction('Bevel');
             this.handle = beginBevel(this.meshRef, this.edge, this.currentWidth);
         } catch (err) {
+            this.history.discardAction();
             this.notifyStatus(`Can't bevel this: ${(err as Error).message}`);
             this.handle = null;
             this.edge = null;
@@ -152,6 +157,7 @@ export class BevelTool {
     private confirm(): void {
         if (!this.handle) return;
         commitBevel(this.handle);
+        this.history.commitAction();
         this.finish();
     }
 
@@ -159,6 +165,7 @@ export class BevelTool {
         if (!this.handle || !this.meshRef) return;
         const mesh = this.meshRef;
         cancelBevel(this.handle);
+        this.history.discardAction();
         for (const m of this.viewport.getPrimitiveMeshes()) {
             if (this.viewport.getHalfEdgeMesh(m) === mesh) this.viewport.refreshPrimitive(m);
         }

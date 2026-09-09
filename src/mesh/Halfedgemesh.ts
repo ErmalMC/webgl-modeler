@@ -94,9 +94,28 @@ export class HalfEdgeMesh {
      * Three.js primitives duplicate vertices at UV/normal seams (e.g.
      * BoxGeometry: 24 buffer vertices for 8 corners), so buffer index isn't
      * a reliable stand-in for "same physical point." This merges buffer
-     * vertices sharing a position before building half-edges.
+     * vertices sharing a position before building half-edges — correct for
+     * importing a fresh primitive, where duplicate seam vertices really
+     * are the same point.
      */
     static fromBufferGeometry(geometry: THREE.BufferGeometry): HalfEdgeMesh {
+        return HalfEdgeMesh.buildFromBufferGeometry(geometry, true);
+    }
+
+    /**
+     * Same as fromBufferGeometry() but skips the position merge — every
+     * buffer position becomes its own vertex even if two sit at the exact
+     * same spot. Needed for round-tripping this mesh's own
+     * toBufferGeometry() output (undo/redo snapshots): a face extruded at
+     * distance 0 has two distinct vertices coincident at the same point
+     * until it's dragged apart, and the normal merge would collapse them
+     * back into one.
+     */
+    static fromBufferGeometryExact(geometry: THREE.BufferGeometry): HalfEdgeMesh {
+        return HalfEdgeMesh.buildFromBufferGeometry(geometry, false);
+    }
+
+    private static buildFromBufferGeometry(geometry: THREE.BufferGeometry, mergeByPosition: boolean): HalfEdgeMesh {
         const mesh = new HalfEdgeMesh();
 
         const posAttr = geometry.getAttribute('position');
@@ -114,14 +133,20 @@ export class HalfEdgeMesh {
 
         for (let i = 0; i < posAttr.count; i++) {
             const pos = new THREE.Vector3().fromBufferAttribute(posAttr, i);
-            const k = posKey(pos);
-            let v = vertexByPos.get(k);
-            if (!v) {
-                v = new HEVertex(mesh.vertices.length, pos);
-                vertexByPos.set(k, v);
+            if (mergeByPosition) {
+                const k = posKey(pos);
+                let v = vertexByPos.get(k);
+                if (!v) {
+                    v = new HEVertex(mesh.vertices.length, pos);
+                    vertexByPos.set(k, v);
+                    mesh.vertices.push(v);
+                }
+                bufferIndexToVertex[i] = v;
+            } else {
+                const v = new HEVertex(mesh.vertices.length, pos);
                 mesh.vertices.push(v);
+                bufferIndexToVertex[i] = v;
             }
-            bufferIndexToVertex[i] = v;
         }
 
         // Track edges by (fromId, toId) so twins resolve in a second pass
@@ -203,22 +228,34 @@ export class HalfEdgeMesh {
         return result;
     }
 
+    /**
+     * Converts this HalfEdgeMesh back into a THREE.BufferGeometry, rebuilding
+     * position/index buffers and recomputing normals. Called after any
+     * topology-changing operation (extrude, bevel, loop cut, scale, delete)
+     * to refresh what's shown on screen.
+     */
     toBufferGeometry(): THREE.BufferGeometry {
         const geometry = new THREE.BufferGeometry();
 
+        // .id is assigned once at creation and never renumbered. Delete
+        // removes vertices from this.vertices without renumbering the
+        // survivors, so .id can end up past vertices.length — building a
+        // fresh 0-based index per call here instead of trusting .id.
+        const bufferIndexOf = new Map<HEVertex, number>();
         const positions = new Float32Array(this.vertices.length * 3);
-        for (const v of this.vertices) {
-            positions[v.id * 3] = v.position.x;
-            positions[v.id * 3 + 1] = v.position.y;
-            positions[v.id * 3 + 2] = v.position.z;
-        }
+        this.vertices.forEach((v, i) => {
+            bufferIndexOf.set(v, i);
+            positions[i * 3] = v.position.x;
+            positions[i * 3 + 1] = v.position.y;
+            positions[i * 3 + 2] = v.position.z;
+        });
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
         this.triangleIndexToFace = [];
         const indices: number[] = [];
         for (const face of this.faces) {
             const [va, vb, vc] = face.vertices();
-            indices.push(va.id, vb.id, vc.id);
+            indices.push(bufferIndexOf.get(va)!, bufferIndexOf.get(vb)!, bufferIndexOf.get(vc)!);
             this.triangleIndexToFace.push(face);
         }
         geometry.setIndex(indices);

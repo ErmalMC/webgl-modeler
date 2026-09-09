@@ -4,6 +4,7 @@ import type { SelectionManager } from '../selection/SelectionManager';
 import { beginFaceExtrude, beginVertexExtrude, beginTipExtrude, updateExtrudeDistance, updateExtrudeOffset, commitExtrude, cancelExtrude } from './extrude';
 import type { ExtrudeHandle } from './extrude';
 import type { InteractionLock } from './InteractionLock';
+import type { History } from './History';
 
 /**
  * Blender-style modal extrude: press E with a face or vertex selected,
@@ -15,6 +16,7 @@ export class ExtrudeTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
+    private history: History;
 
     private static readonly LOCK_NAME = 'extrude';
 
@@ -49,10 +51,11 @@ export class ExtrudeTool {
         for (const listener of this.statusListeners) listener(message);
     }
 
-    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock) {
+    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock, history: History) {
         this.viewport = viewport;
         this.selectionManager = selectionManager;
         this.lock = lock;
+        this.history = history;
 
         window.addEventListener('keydown', (e) => this.handleKeydown(e));
         window.addEventListener('pointermove', (e) => this.handlePointerMove(e));
@@ -89,6 +92,7 @@ export class ExtrudeTool {
         }
 
         try {
+            this.history.beginAction(selection.mode === 'face' ? 'Extrude Face' : 'Extrude Vertex');
             if (selection.mode === 'face') {
                 this.handle = beginFaceExtrude(selection.halfEdgeMesh, selection.selectableFace);
                 const localCenter = this.faceGroupCenter(selection.selectableFace.triangles.flatMap((t) => t.vertices()));
@@ -103,10 +107,12 @@ export class ExtrudeTool {
                 this.dragMode = 'vertex';
             } else {
                 this.notifyStatus('Edge extrude is not implemented yet.');
+                this.history.discardAction();
                 this.lock.release(ExtrudeTool.LOCK_NAME);
                 return;
             }
         } catch (err) {
+            this.history.discardAction();
             this.notifyStatus(`Can't extrude this: ${(err as Error).message}`);
             this.handle = null;
             this.lock.release(ExtrudeTool.LOCK_NAME);
@@ -203,12 +209,14 @@ export class ExtrudeTool {
     private confirm(): void {
         if (!this.handle) return;
         commitExtrude(this.handle);
+        this.history.commitAction();
         this.finish();
     }
 
     private cancel(): void {
         if (!this.handle) return;
         cancelExtrude(this.handle);
+        this.history.discardAction();
         const selection = this.selectionManager.current;
         if (selection && (selection.mode === 'face' || selection.mode === 'vertex')) {
             this.viewport.refreshPrimitive(selection.mesh);

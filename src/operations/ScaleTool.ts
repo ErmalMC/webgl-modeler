@@ -4,6 +4,7 @@ import type { SelectionManager } from '../selection/SelectionManager';
 import { beginScale, updateScale, commitScale, cancelScale } from './scale';
 import type { ScaleHandle, ScaleAxis } from './scale';
 import type { InteractionLock } from './InteractionLock';
+import type { History } from './History';
 
 /**
  * Blender-style modal scale: press S with a face or edge selected, move
@@ -19,6 +20,7 @@ export class ScaleTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
+    private history: History;
 
     private static readonly LOCK_NAME = 'scale';
 
@@ -44,10 +46,11 @@ export class ScaleTool {
         for (const listener of this.statusListeners) listener(message);
     }
 
-    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock) {
+    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock, history: History) {
         this.viewport = viewport;
         this.selectionManager = selectionManager;
         this.lock = lock;
+        this.history = history;
 
         window.addEventListener('keydown', (e) => this.handleKeydown(e));
         window.addEventListener('pointermove', (e) => this.handlePointerMove(e));
@@ -108,8 +111,10 @@ export class ScaleTool {
             : selection.edge.endpoints();
 
         try {
+            this.history.beginAction('Scale');
             this.handle = beginScale(selection.halfEdgeMesh, vertices);
         } catch (err) {
+            this.history.discardAction();
             this.notifyStatus(`Can't scale this: ${(err as Error).message}`);
             this.handle = null;
             this.lock.release(ScaleTool.LOCK_NAME);
@@ -178,12 +183,14 @@ export class ScaleTool {
     private confirm(): void {
         if (!this.handle) return;
         commitScale(this.handle);
+        this.history.commitAction();
         this.finish();
     }
 
     private cancel(): void {
         if (!this.handle) return;
         cancelScale(this.handle);
+        this.history.discardAction();
         this.refreshVisuals();
         this.finish();
     }

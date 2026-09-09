@@ -3,6 +3,7 @@ import type { SelectionManager } from '../selection/SelectionManager';
 import { beginDeleteFaces, beginDeleteEdge, beginDeleteVertex, commitDelete, cancelDelete } from './delete';
 import type { DeleteHandle } from './delete';
 import type { InteractionLock } from './InteractionLock';
+import type { History } from './History';
 
 /**
  * Delete: select a face, edge, or vertex, press Delete (or Backspace —
@@ -17,6 +18,7 @@ export class DeleteTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
+    private history: History;
 
     private static readonly LOCK_NAME = 'delete';
 
@@ -33,10 +35,11 @@ export class DeleteTool {
         for (const listener of this.statusListeners) listener(message);
     }
 
-    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock) {
+    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock, history: History) {
         this.viewport = viewport;
         this.selectionManager = selectionManager;
         this.lock = lock;
+        this.history = history;
 
         window.addEventListener('keydown', (e) => this.handleKeydown(e));
         window.addEventListener('click', (e) => this.handleClick(e), true);
@@ -74,6 +77,7 @@ export class DeleteTool {
             return;
         }
 
+        this.history.beginAction(`Delete ${selection.mode}`);
         if (selection.mode === 'face') {
             this.handle = beginDeleteFaces(selection.halfEdgeMesh, selection.selectableFace);
         } else if (selection.mode === 'edge') {
@@ -104,6 +108,7 @@ export class DeleteTool {
     private confirm(): void {
         if (!this.handle) return;
         commitDelete(this.handle);
+        this.history.commitAction();
         this.finish();
     }
 
@@ -111,6 +116,7 @@ export class DeleteTool {
         if (!this.handle) return;
         const mesh = this.handle.mesh;
         cancelDelete(this.handle);
+        this.history.discardAction();
         for (const m of this.viewport.getPrimitiveMeshes()) {
             if (this.viewport.getHalfEdgeMesh(m) === mesh) this.viewport.refreshPrimitive(m);
         }

@@ -4,6 +4,7 @@ import type { SelectionManager } from '../selection/SelectionManager';
 import { beginMove, updateMoveOffset, commitMove, cancelMove } from './move';
 import type { MoveHandle } from './move';
 import type { InteractionLock } from './InteractionLock';
+import type { History } from './History';
 
 type MoveAxis = 'all' | 'x' | 'y' | 'z';
 
@@ -26,6 +27,7 @@ export class MoveTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
+    private history: History;
 
     private static readonly LOCK_NAME = 'move';
     private static readonly PIXELS_PER_UNIT = 100;
@@ -59,10 +61,11 @@ export class MoveTool {
         for (const listener of this.statusListeners) listener(message);
     }
 
-    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock) {
+    constructor(viewport: Viewport, selectionManager: SelectionManager, lock: InteractionLock, history: History) {
         this.viewport = viewport;
         this.selectionManager = selectionManager;
         this.lock = lock;
+        this.history = history;
 
         window.addEventListener('keydown', (e) => this.handleKeydown(e));
         window.addEventListener('pointermove', (e) => this.handlePointerMove(e));
@@ -107,6 +110,7 @@ export class MoveTool {
         }
 
         this.handle = beginMove(selection.mesh);
+        this.history.beginAction('Move');
         this.offset.set(0, 0, 0);
         this.axis = 'all';
 
@@ -200,12 +204,14 @@ export class MoveTool {
     private confirm(): void {
         if (!this.handle) return;
         commitMove(this.handle);
+        this.history.commitAction();
         this.finish();
     }
 
     private cancel(): void {
         if (!this.handle) return;
         cancelMove(this.handle);
+        this.history.discardAction();
         this.finish();
     }
 
