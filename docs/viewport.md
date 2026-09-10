@@ -20,6 +20,7 @@ foundation of the entire application — every other feature renders inside it.
 | Numpad 4 | Left view (orthographic) |
 | Numpad 7 | Top view (orthographic) |
 | Numpad 9 | Bottom view (orthographic) |
+| Home | Reset camera to the startup view |
 
 All numpad view presets switch the active camera to orthographic
 automatically, matching Blender's convention — you don't need to press
@@ -53,17 +54,24 @@ camera at a fixed distance from the current orbit target, force orthographic
 mode, and adjust the camera's `up` vector for top/bottom views to avoid
 gimbal-lock artifacts when looking straight down or up.
 
+`resetCamera()` (Home key, or the "Reset Camera" button) restores both
+cameras' position, orientation, and `up` vector to the same
+`HOME_POSITION` constant the constructor uses, resets the orbit target
+to the origin, and switches back to perspective — undoing any amount of
+pan/zoom/orbit/view-preset drift in one step, regardless of which camera
+was active or how far `up` had been knocked off-axis by a top/bottom
+view.
+
 ## Files involved
 - `src/viewport.ts` — the Viewport class (cameras, controls, mesh tracking,
   wireframe mode)
 - `src/main.ts` — initializes the viewport, GUI, and runs the animation loop
-- `src/ui/gui.ts` — Tweakpane panel: camera mode/view buttons, primitive
-  spawner, Clear Scene, wireframe toggle
+- `src/ui/gui.ts` — Tweakpane panel: camera mode/view/reset buttons,
+  primitive spawner, Clear Scene, wireframe toggle
 - `src/mesh/MeshBuilder.ts` — generates primitive geometries (cube, plane,
   cylinder, sphere) for the GUI to spawn
 
 ## Known limitations
-- No camera reset button yet
 - Toggling wireframe mode applies to all meshes, not per-object
 - Primitive grid spawn layout only expands outward (+X/+Z); it doesn't
   reuse freed slots after Clear Scene beyond restarting at the origin

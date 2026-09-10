@@ -16,6 +16,9 @@ export class Viewport {
 
   private orbitRadius = 7.2;
 
+  /** Startup camera framing, reused by resetCamera() so there's one source of truth for "home". */
+  private static readonly HOME_POSITION = new THREE.Vector3(4, 4, 6);
+
   private meshes: THREE.Mesh[] = [];
 
   // Only meshes added via addPrimitive() have an entry here — helper
@@ -34,7 +37,7 @@ export class Viewport {
         0.1,
         10000
     );
-    this.perspectiveCamera.position.set(4, 4, 6);
+    this.perspectiveCamera.position.copy(Viewport.HOME_POSITION);
     this.perspectiveCamera.lookAt(0, 0, 0);
 
     // Framed to roughly match the perspective view at the same distance.
@@ -48,7 +51,7 @@ export class Viewport {
         0.1,
         10000
     );
-    this.orthographicCamera.position.copy(this.perspectiveCamera.position);
+    this.orthographicCamera.position.copy(Viewport.HOME_POSITION);
     this.orthographicCamera.lookAt(0, 0, 0);
 
     this.camera = this.perspectiveCamera;
@@ -121,6 +124,9 @@ export class Viewport {
       case 'Numpad9':
         this.setView('bottom');
         break;
+      case 'Home':
+        this.resetCamera();
+        break;
       default:
         return;
     }
@@ -167,6 +173,23 @@ export class Viewport {
             : new THREE.Vector3(0, 1, 0);
     this.camera.up.copy(up);
     this.camera.lookAt(target);
+    this.controls.update();
+  }
+
+  /** Restores the camera to its startup framing (position, target, up, and perspective mode), undoing any pan/zoom/orbit/view-preset drift. */
+  resetCamera(): void {
+    this.camera = this.perspectiveCamera;
+    this.camera.up.set(0, 1, 0);
+    this.camera.position.copy(Viewport.HOME_POSITION);
+    this.controls.target.set(0, 0, 0);
+    this.camera.lookAt(this.controls.target);
+
+    this.orthographicCamera.up.set(0, 1, 0);
+    this.orthographicCamera.position.copy(Viewport.HOME_POSITION);
+    this.orthographicCamera.lookAt(0, 0, 0);
+
+    this.updateCameraAspect();
+    this.controls.object = this.camera;
     this.controls.update();
   }
 

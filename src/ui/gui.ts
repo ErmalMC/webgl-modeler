@@ -178,7 +178,14 @@ export function setupGUI(viewport: Viewport, selectionManager: SelectionManager,
             cameraMonitor.refresh();
         });
 
-    const numpadHintState = { text: 'Numpad  1 front · 3 right · 7 top · Shift+digit for opposite · 5 toggle' };
+    cameraFolder.addButton({ title: 'Reset Camera (Home)' })
+        .on('click', () => {
+            viewport.resetCamera();
+            cameraState.type = viewport.camera.type;
+            cameraMonitor.refresh();
+        });
+
+    const numpadHintState = { text: 'Numpad  1 front · 3 right · 7 top · Shift+digit for opposite · 5 toggle · Home reset' };
     const numpadHint = cameraFolder.addBinding(numpadHintState, 'text', { label: '', readonly: true });
     numpadHint.element.classList.add('hint-row');
 
