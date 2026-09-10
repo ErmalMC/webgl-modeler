@@ -13,9 +13,29 @@ import type { MoveTool } from '../operations/MoveTool.ts';
 import type { DeleteTool } from '../operations/DeleteTool.ts';
 import type { InteractionLock } from '../operations/InteractionLock.ts';
 import type { History } from '../operations/History.ts';
+import { downloadObj } from '../export/objExport.ts';
+import { triggerObjImport } from '../export/objImport.ts';
 
 const SPAWN_SPACING = 2.5;
 const SPAWN_PER_ROW = 5;
+
+/** Returns a setter that shows `message` in a readonly binding for a few seconds, then reverts to `defaultHint`. */
+function makeTemporaryStatusSetter(
+    binding: { refresh(): void },
+    state: { text: string },
+    defaultHint: string
+): (message: string) => void {
+    let clearTimer: ReturnType<typeof setTimeout> | undefined;
+    return (message: string) => {
+        state.text = message;
+        binding.refresh();
+        clearTimeout(clearTimer);
+        clearTimer = setTimeout(() => {
+            state.text = defaultHint;
+            binding.refresh();
+        }, 4000);
+    };
+}
 
 /**
  * Sets up a status row for a modal tool: key-badge + label on the left,
@@ -42,16 +62,7 @@ function setupOperationStatusRow(
         labelEl.appendChild(document.createTextNode(opLabel));
     }
 
-    let clearTimer: ReturnType<typeof setTimeout> | undefined;
-    onStatus((message) => {
-        state.text = message;
-        monitor.refresh();
-        clearTimeout(clearTimer);
-        clearTimer = setTimeout(() => {
-            state.text = defaultHint;
-            monitor.refresh();
-        }, 4000);
-    });
+    onStatus(makeTemporaryStatusSetter(monitor, state, defaultHint));
 }
 
 /**
@@ -329,6 +340,23 @@ export function setupGUI(viewport: Viewport, selectionManager: SelectionManager,
     setupOperationStatusRow(historyFolder, '^Z', 'Undo/Redo', 'Ctrl+Z to undo, Ctrl+Shift+Z to redo', (l) => history.onStatus(l));
     historyFolder.addButton({ title: 'Undo' }).on('click', () => history.undo());
     historyFolder.addButton({ title: 'Redo' }).on('click', () => history.redo());
+
+    // --- Import / Export section ----------------------------------------
+    const ioFolder = pane.addFolder({ title: 'Import / Export' });
+
+    const importState = { text: 'Import an OBJ file' };
+    const importMonitor = ioFolder.addBinding(importState, 'text', { label: 'Import', readonly: true });
+    const setImportStatus = makeTemporaryStatusSetter(importMonitor, importState, importState.text);
+
+    ioFolder.addButton({ title: 'Import OBJ' }).on('click', () => {
+        triggerObjImport(viewport, history, setImportStatus);
+    });
+
+    ioFolder.addButton({ title: 'Export OBJ' }).on('click', () => {
+        const meshes = viewport.getPrimitiveMeshes();
+        if (meshes.length === 0) return;
+        downloadObj(meshes);
+    });
 
     // --- Display section ---------------------------------------------------
     const displayFolder = pane.addFolder({ title: 'Display' });
