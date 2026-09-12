@@ -14,7 +14,10 @@ with it).
 1. Switch to face-select mode (key **1**) and click a face.
 2. Press **E** to begin.
 3. Move the mouse — the face slides in or out along its own normal only;
-   there's no other direction to push a flat face in.
+   there's no other direction to push a flat face in. Or type a number
+   directly for an exact distance (e.g. `-0.5` for pushing inward) —
+   typing any digit or `-` switches from mouse control to keyboard
+   entry, Backspace edits it, Enter confirms.
 4. **Left click** or **Enter** to confirm, **right click** or **Esc** to
    cancel and put the mesh back exactly as it was.
 
@@ -80,17 +83,23 @@ an explicit scan for half-edges whose `.twin` no longer points at
 anything in the live mesh to find it.
 
 **Dragging**: face extrude uses `updateExtrudeDistance`, a single scalar
-distance along the face's fixed normal. Vertex/tip extrude uses
-`updateExtrudeOffset`, a free 3D offset — `ExtrudeTool` builds this from
-mouse movement projected onto the active camera's right/up axes in world
-space, so the tip tracks the cursor regardless of camera angle.
+distance along the face's fixed normal — which is also why only face
+extrude supports typed numeric entry (a single scalar to type). Vertex/tip
+extrude uses `updateExtrudeOffset`, a free 3D offset — `ExtrudeTool` builds
+this from mouse movement projected onto the active camera's right/up axes
+in world space, so the tip tracks the cursor regardless of camera angle;
+there's no single number that describes a free 2-axis drag, so numeric
+entry doesn't apply there and it stays mouse-only.
 
 ## Files involved
 - `src/operations/extrude.ts` — all extrude topology math: begin/update/
   commit/cancel for both face and vertex/tip extrude
 - `src/operations/ExtrudeTool.ts` — modal interaction: keyboard (E /
-  Enter / Esc), mouse drag, screen-space-to-world-space projection,
-  status messages
+  Enter / Esc), mouse drag, numeric distance entry for face mode,
+  screen-space-to-world-space projection, status messages
+- `src/operations/NumericEntry.ts` — the shared keyboard numeric-entry
+  mechanism (see its own doc comment; also used by Bevel, Scale, and
+  Move)
 - `src/operations/InteractionLock.ts` — prevents extrude from starting
   while another modal tool (Scale, Loop Cut, Bevel) is mid-operation
 - `src/mesh/Halfedgemesh.ts` — `getBoundaryLoop` (face extrude's wall
@@ -106,4 +115,7 @@ space, so the tip tracks the cursor regardless of camera angle.
 - Vertex extrude requires an *interior* vertex with a fully closed ring —
   a boundary vertex (e.g. a Plane's corners) has nowhere for the ring walk
   to close and throws a clear error instead of guessing.
+- Numeric entry only covers face-mode distance, not vertex/tip extrude's
+  free offset — a deliberate scope decision (see "Dragging" above), not
+  an oversight.
 - No numeric input for exact distance/offset — mouse drag only.

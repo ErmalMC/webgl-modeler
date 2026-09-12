@@ -5,6 +5,7 @@ import { beginMove, updateMoveOffset, commitMove, cancelMove } from './move';
 import type { MoveHandle } from './move';
 import type { InteractionLock } from './InteractionLock';
 import type { History } from './History';
+import { NumericEntry } from './NumericEntry';
 
 type MoveAxis = 'all' | 'x' | 'y' | 'z';
 
@@ -17,6 +18,10 @@ type MoveAxis = 'all' | 'x' | 'y' | 'z';
  * to one axis (press again to release), left-click/Enter to confirm,
  * right-click/Esc to cancel.
  *
+ * Once an axis is constrained, that axis's offset can also be typed
+ * directly via NumericEntry — the free 2-axis drag has no single scalar
+ * to type, so numeric entry only engages after X/Y/Z locks it to one.
+ *
  * Never calls refreshPrimitive() or touches the HalfEdgeMesh — moving a
  * rigid object only changes its THREE.Mesh position, so the selection
  * highlight (parented under the mesh, see SelectionManager) tags along
@@ -28,6 +33,7 @@ export class MoveTool {
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
     private history: History;
+    private numericEntry = new NumericEntry();
 
     private static readonly LOCK_NAME = 'move';
     private static readonly PIXELS_PER_UNIT = 100;
@@ -84,6 +90,11 @@ export class MoveTool {
         }
         if (!this.active) return;
 
+        if (this.axis !== 'all' && this.numericEntry.handleKey(e)) {
+            this.applyNumericOffset();
+            return;
+        }
+
         if (e.code === 'Enter') {
             this.confirm();
         } else if (e.code === 'Escape') {
@@ -119,6 +130,7 @@ export class MoveTool {
         this.viewUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
 
         this.hasBaseline = false;
+        this.numericEntry.reset();
         this.active = true;
         this.viewport.controls.enabled = false;
     }
@@ -128,6 +140,7 @@ export class MoveTool {
         if (!this.handle) return;
         const next: MoveAxis = this.axis === axis ? 'all' : axis;
         this.axis = next;
+        this.numericEntry.reset(); // a new axis starts a fresh typed value, not a carried-over one
 
         if (next !== 'all') {
             // Snap to just this axis's current component, matching Blender's
@@ -161,8 +174,23 @@ export class MoveTool {
         return dir.lengthSq() > 1e-8 ? dir.normalize() : new THREE.Vector2(1, 0);
     }
 
+    /** Sets the current axis's offset to an absolute typed value (not a relative delta, matching mouse-drag's own behavior once an axis is locked). */
+    private applyNumericOffset(): void {
+        if (!this.handle || this.axis === 'all') return;
+        const value = this.numericEntry.value;
+        if (value === null) return; // incomplete entry (e.g. just "-") — nothing to apply yet
+
+        if (this.axis === 'x') this.offset.x = value;
+        else if (this.axis === 'y') this.offset.y = value;
+        else this.offset.z = value;
+
+        updateMoveOffset(this.handle, this.offset);
+        this.notifyStatus(`${this.axis.toUpperCase()}: ${this.numericEntry.displayText}`);
+    }
+
     private handlePointerMove(e: PointerEvent): void {
         if (!this.active || !this.handle) return;
+        if (this.numericEntry.active) return;
 
         if (!this.hasBaseline) {
             this.lastPointer = { x: e.clientX, y: e.clientY };
@@ -219,6 +247,7 @@ export class MoveTool {
         this.active = false;
         this.handle = null;
         this.axis = 'all';
+        this.numericEntry.reset();
         this.viewport.controls.enabled = true;
         this.lock.release(MoveTool.LOCK_NAME);
     }

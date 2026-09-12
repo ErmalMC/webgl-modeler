@@ -5,18 +5,24 @@ import { beginFaceExtrude, beginVertexExtrude, beginTipExtrude, updateExtrudeDis
 import type { ExtrudeHandle } from './extrude';
 import type { InteractionLock } from './InteractionLock';
 import type { History } from './History';
+import { NumericEntry } from './NumericEntry';
 
 /**
  * Blender-style modal extrude: press E with a face or vertex selected,
  * move the mouse to drag, left-click/Enter to confirm, right-click/Esc
  * to cancel. While active this owns pointer movement, disables
  * OrbitControls, and intercepts the confirm click.
+ *
+ * Face-mode distance can also be typed directly (press a digit while
+ * dragging) via NumericEntry. Vertex mode is a free 2-axis view-plane
+ * drag with no single scalar to type, so it stays mouse-only.
  */
 export class ExtrudeTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
     private history: History;
+    private numericEntry = new NumericEntry();
 
     private static readonly LOCK_NAME = 'extrude';
 
@@ -72,9 +78,18 @@ export class ExtrudeTool {
     private handleKeydown(e: KeyboardEvent): void {
         if (e.code === 'KeyE' && !this.active) {
             this.start();
-        } else if (this.active && e.code === 'Enter') {
+            return;
+        }
+        if (!this.active) return;
+
+        if (this.dragMode === 'face' && this.numericEntry.handleKey(e)) {
+            this.applyNumericDistance();
+            return;
+        }
+
+        if (e.code === 'Enter') {
             this.confirm();
-        } else if (this.active && e.code === 'Escape') {
+        } else if (e.code === 'Escape') {
             this.cancel();
         }
     }
@@ -121,6 +136,7 @@ export class ExtrudeTool {
 
         this.currentDistance = 0;
         this.hasBaseline = false;
+        this.numericEntry.reset();
         this.active = true;
         this.viewport.controls.enabled = false;
     }
@@ -164,6 +180,7 @@ export class ExtrudeTool {
 
     private handlePointerMove(e: PointerEvent): void {
         if (!this.active || !this.handle) return;
+        if (this.numericEntry.active) return;
 
         if (!this.hasBaseline) {
             this.lastPointer = { x: e.clientX, y: e.clientY };
@@ -180,17 +197,35 @@ export class ExtrudeTool {
 
         if (this.dragMode === 'face') {
             const delta = (dx * this.screenDir.x + dy * this.screenDir.y) / ExtrudeTool.PIXELS_PER_UNIT;
-            this.currentDistance += delta;
-            updateExtrudeDistance(this.handle, this.currentDistance);
-        } else {
-            this.currentOffset
-                .addScaledVector(this.viewRight, dx / ExtrudeTool.PIXELS_PER_UNIT)
-                .addScaledVector(this.viewUp, -dy / ExtrudeTool.PIXELS_PER_UNIT);
-            updateExtrudeOffset(this.handle, this.currentOffset);
+            this.applyDistance(this.currentDistance + delta);
+            return;
         }
+
+        this.currentOffset
+            .addScaledVector(this.viewRight, dx / ExtrudeTool.PIXELS_PER_UNIT)
+            .addScaledVector(this.viewUp, -dy / ExtrudeTool.PIXELS_PER_UNIT);
+        updateExtrudeOffset(this.handle, this.currentOffset);
 
         this.viewport.refreshPrimitive(selection.mesh);
         this.selectionManager.refreshHighlight();
+    }
+
+    /** Sets the face-mode extrude distance and refreshes the display — shared by mouse drag and numeric entry. */
+    private applyDistance(distance: number): void {
+        if (!this.handle) return;
+        const selection = this.selectionManager.current;
+        if (!selection || selection.mode !== 'face') return;
+        this.currentDistance = distance;
+        updateExtrudeDistance(this.handle, this.currentDistance);
+        this.viewport.refreshPrimitive(selection.mesh);
+        this.selectionManager.refreshHighlight();
+    }
+
+    private applyNumericDistance(): void {
+        const value = this.numericEntry.value;
+        if (value === null) return; // incomplete entry (e.g. just "-") — nothing to apply yet
+        this.applyDistance(value);
+        this.notifyStatus(`Distance: ${this.numericEntry.displayText}`);
     }
 
     private handleClick(e: MouseEvent): void {
@@ -231,6 +266,7 @@ export class ExtrudeTool {
         this.active = false;
         this.handle = null;
         this.dragMode = null;
+        this.numericEntry.reset();
         this.viewport.controls.enabled = true;
         this.lock.release(ExtrudeTool.LOCK_NAME);
     }

@@ -4,6 +4,7 @@ import { beginBevel, commitBevel, cancelBevel } from './bevel';
 import type { BevelHandle } from './bevel';
 import type { InteractionLock } from './InteractionLock';
 import type { History } from './History';
+import { NumericEntry } from './NumericEntry';
 
 /**
  * Bevel: select an edge, press Ctrl+B to start. Like Loop Cut, there's no
@@ -14,12 +15,16 @@ import type { History } from './History';
  * vertices directly — bevel.ts's geometry doesn't change with width, only
  * positions do, so re-deriving is cheap and guarantees the live result
  * goes through the same verified code path as the initial cut.
+ *
+ * Width can also be typed directly (press a digit while dragging) via
+ * NumericEntry, instead of dragging the mouse to an exact value by eye.
  */
 export class BevelTool {
     private viewport: Viewport;
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
     private history: History;
+    private numericEntry = new NumericEntry();
 
     private static readonly LOCK_NAME = 'bevel';
     private static readonly DEFAULT_WIDTH = 0.2;
@@ -73,6 +78,11 @@ export class BevelTool {
         }
         if (!this.active) return;
 
+        if (this.numericEntry.handleKey(e)) {
+            this.applyNumericWidth();
+            return;
+        }
+
         if (e.code === 'Enter') {
             this.confirm();
         } else if (e.code === 'Escape') {
@@ -112,12 +122,32 @@ export class BevelTool {
         this.viewport.refreshPrimitive(selection.mesh);
         this.selectionManager.clearSelection();
         this.hasBaseline = false;
+        this.numericEntry.reset();
         this.active = true;
         this.viewport.controls.enabled = false;
     }
 
+    /** Re-derives the bevel from scratch at `width` — shared by mouse drag and numeric entry. */
+    private applyWidth(width: number): void {
+        if (!this.handle || !this.edge || !this.meshRef) return;
+        this.currentWidth = width;
+        cancelBevel(this.handle);
+        this.handle = beginBevel(this.meshRef, this.edge, this.currentWidth);
+        for (const m of this.viewport.getPrimitiveMeshes()) {
+            if (this.viewport.getHalfEdgeMesh(m) === this.meshRef) this.viewport.refreshPrimitive(m);
+        }
+    }
+
+    private applyNumericWidth(): void {
+        const value = this.numericEntry.value;
+        if (value === null) return; // incomplete entry (e.g. just "-") — nothing to apply yet
+        this.applyWidth(Math.max(value, BevelTool.MIN_WIDTH));
+        this.notifyStatus(`Width: ${this.numericEntry.displayText}`);
+    }
+
     private handlePointerMove(e: PointerEvent): void {
         if (!this.active || !this.handle || !this.edge || !this.meshRef) return;
+        if (this.numericEntry.active) return;
 
         if (!this.hasBaseline) {
             this.lastPointer = { x: e.clientX, y: e.clientY };
@@ -131,14 +161,7 @@ export class BevelTool {
 
         // Overall mouse motion, not a projected axis — a bevel's width has no direction.
         const delta = (dx + -dy) / BevelTool.PIXELS_PER_UNIT;
-        this.currentWidth = Math.max(this.currentWidth + delta, BevelTool.MIN_WIDTH);
-
-        cancelBevel(this.handle);
-        this.handle = beginBevel(this.meshRef, this.edge, this.currentWidth);
-
-        for (const m of this.viewport.getPrimitiveMeshes()) {
-            if (this.viewport.getHalfEdgeMesh(m) === this.meshRef) this.viewport.refreshPrimitive(m);
-        }
+        this.applyWidth(Math.max(this.currentWidth + delta, BevelTool.MIN_WIDTH));
     }
 
     private handleClick(e: MouseEvent): void {
@@ -177,6 +200,7 @@ export class BevelTool {
         this.handle = null;
         this.edge = null;
         this.meshRef = null;
+        this.numericEntry.reset();
         this.viewport.controls.enabled = true;
         this.lock.release(BevelTool.LOCK_NAME);
     }

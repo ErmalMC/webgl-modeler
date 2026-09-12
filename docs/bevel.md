@@ -13,7 +13,13 @@ profile.
    no drag-from-zero phase — the bevel is inserted immediately at a
    default width, since a zero-width bevel isn't a smaller bevel, it's
    degenerate geometry.
-3. Move the mouse to grow or shrink the bevel's width live.
+3. Move the mouse to grow or shrink the bevel's width live, or type a
+   number directly for an exact width (e.g. `0.5` then Enter) — typing
+   any digit switches from mouse control to keyboard entry; Backspace
+   removes the last character, Enter confirms the whole bevel at that
+   width. A typed value of zero or negative is clamped up to the same
+   minimum width mouse-dragging already enforces, rather than producing
+   degenerate geometry.
 4. **Left click** or **Enter** to confirm, **right click** or **Esc** to
    cancel and restore the original sharp edge exactly.
 
@@ -68,7 +74,10 @@ bevels around one shared vertex with no overlap or corruption found.
   original edge at the new width on every mouse move, rather than
   repositioning existing vertices directly, so the live-adjusted result
   always goes through the same verified code path as the initial cut),
-  Enter/click to confirm, Esc/right-click to cancel
+  numeric width entry, Enter/click to confirm, Esc/right-click to cancel
+- `src/operations/NumericEntry.ts` — the shared keyboard numeric-entry
+  mechanism (see its own doc comment; also used by Scale, Extrude, and
+  Move)
 - `src/operations/InteractionLock.ts` — prevents bevel from starting
   while another modal tool is mid-operation
 - `src/ui/gui.ts` — the Operations panel's Bevel status row
@@ -79,5 +88,3 @@ bevels around one shared vertex with no overlap or corruption found.
   face present.
 - Only 1 segment (a single flat chamfer face), not a rounded,
   multi-segment profile.
-- No numeric input for an exact width — mouse drag only, starting from a
-  fixed default.

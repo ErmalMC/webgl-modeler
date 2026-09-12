@@ -5,6 +5,7 @@ import { beginScale, updateScale, commitScale, cancelScale } from './scale';
 import type { ScaleHandle, ScaleAxis } from './scale';
 import type { InteractionLock } from './InteractionLock';
 import type { History } from './History';
+import { NumericEntry } from './NumericEntry';
 
 /**
  * Blender-style modal scale: press S with a face or edge selected, move
@@ -21,6 +22,7 @@ export class ScaleTool {
     private selectionManager: SelectionManager;
     private lock: InteractionLock;
     private history: History;
+    private numericEntry = new NumericEntry();
 
     private static readonly LOCK_NAME = 'scale';
 
@@ -69,6 +71,11 @@ export class ScaleTool {
         }
         if (!this.active) return;
 
+        if (this.numericEntry.handleKey(e)) {
+            this.applyNumericFactor();
+            return;
+        }
+
         if (e.code === 'Enter') {
             this.confirm();
         } else if (e.code === 'Escape') {
@@ -86,8 +93,22 @@ export class ScaleTool {
     private setAxis(axis: ScaleAxis): void {
         if (!this.handle) return;
         this.axis = this.axis === axis ? 'all' : axis;
+        this.applyFactor(this.currentFactor);
+    }
+
+    /** Applies `factor` (clamped to the same floor mouse-dragging enforces) at the current axis constraint. Shared by mouse drag, axis toggling, and numeric entry. */
+    private applyFactor(factor: number): void {
+        if (!this.handle) return;
+        this.currentFactor = Math.max(factor, ScaleTool.MIN_FACTOR);
         updateScale(this.handle, this.currentFactor, this.axis);
         this.refreshVisuals();
+    }
+
+    private applyNumericFactor(): void {
+        const value = this.numericEntry.value;
+        if (value === null) return; // incomplete entry (e.g. just "-") — nothing to apply yet
+        this.applyFactor(value);
+        this.notifyStatus(`Factor: ${this.numericEntry.displayText}`);
     }
 
     private start(): void {
@@ -127,6 +148,7 @@ export class ScaleTool {
         this.axis = 'all';
         this.currentFactor = 1;
         this.hasInitialDist = false;
+        this.numericEntry.reset();
         this.active = true;
         this.viewport.controls.enabled = false;
     }
@@ -143,6 +165,7 @@ export class ScaleTool {
 
     private handlePointerMove(e: PointerEvent): void {
         if (!this.active || !this.handle) return;
+        if (this.numericEntry.active) return;
 
         const dist = Math.hypot(e.clientX - this.pivotScreen.x, e.clientY - this.pivotScreen.y);
 
@@ -154,10 +177,7 @@ export class ScaleTool {
         }
 
         const rawFactor = dist / this.initialDist;
-        this.currentFactor = Math.max(rawFactor, ScaleTool.MIN_FACTOR);
-
-        updateScale(this.handle, this.currentFactor, this.axis);
-        this.refreshVisuals();
+        this.applyFactor(rawFactor);
     }
 
     private refreshVisuals(): void {
@@ -198,6 +218,7 @@ export class ScaleTool {
     private finish(): void {
         this.active = false;
         this.handle = null;
+        this.numericEntry.reset();
         this.viewport.controls.enabled = true;
         this.lock.release(ScaleTool.LOCK_NAME);
     }

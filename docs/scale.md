@@ -15,7 +15,10 @@ Blender's does.
 2. Press **S** to begin.
 3. Move the mouse **away** from the selection's on-screen center to grow
    it, or **toward** it to shrink it — direction doesn't matter, only
-   distance from that center point.
+   distance from that center point. Or type a number directly for an
+   exact factor (e.g. `2` to double the size, `0.5` to halve it) —
+   typing any digit switches from mouse control to keyboard entry,
+   works with or without an axis constraint active.
 4. Optionally press **X**, **Y**, or **Z** to restrict the resize to one
    axis (press the same key again to release the constraint and go back
    to all axes).
@@ -66,13 +69,16 @@ doesn't have a direction the way a push-out does, only a size.
 - `src/operations/scale.ts` — scale topology math: begin/update/commit/
   cancel, axis constraint
 - `src/operations/ScaleTool.ts` — modal interaction: keyboard (S / X / Y /
-  Z / Enter / Esc), pivot-distance-ratio mouse tracking, status messages
+  Z / Enter / Esc), pivot-distance-ratio mouse tracking, numeric factor
+  entry, status messages
+- `src/operations/NumericEntry.ts` — the shared keyboard numeric-entry
+  mechanism (see its own doc comment; also used by Bevel, Extrude, and
+  Move)
 - `src/operations/InteractionLock.ts` — prevents scale from starting
   while another modal tool is mid-operation
 - `src/ui/gui.ts` — the Operations panel's Scale status row
 
 ## Known limitations
 - Single face or single edge selection only — no multi-selection scale.
-- No numeric input for an exact factor — mouse drag only.
 - No visible pivot-point marker in the viewport; the center it's scaling
   around is implicit (the selection's own centroid) rather than shown.
